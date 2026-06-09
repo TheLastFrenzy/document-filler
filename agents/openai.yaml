@@ -1,0 +1,8 @@
+﻿name: document-filler
+description: 台账清单→Word验收文档自动填充（支持需求/设计文档）
+type: skill
+chips:
+  - label: 生成需求文档
+    prompt: 使用 document-filler 技能，帮我生成服务目录为"N08-数据报表服务"的"01-数据报表_需求文档"文档材料，台账清单的路径在 XXX，模版文件的路径在 XXX，输出的文件放在 XXX 路径下
+  - label: 生成设计文档
+    prompt: 使用 document-filler 技能，帮我生成服务目录为"N08-数据报表服务"的"02-数据报表_设计文档"文档材料，台账清单的路径在 XXX，模版文件的路径在 XXX，参考的数据目录数据路径是 XXX，输出的文件放在 XXX 路径下
