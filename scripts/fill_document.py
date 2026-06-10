@@ -91,7 +91,7 @@ def mp(text, style_id, indent=None):
     p.append(r)
     return p
 
-def make_cell_oxml(text, grid_span=None, bold=False, bg=None):
+def make_cell_oxml(text, grid_span=None, bold=False, bg=None, align=None):
     tc = OxmlElement("w:tc")
     tcPr = OxmlElement("w:tcPr")
     if grid_span:
@@ -105,6 +105,12 @@ def make_cell_oxml(text, grid_span=None, bold=False, bg=None):
         tcPr.append(shd)
     tc.append(tcPr)
     p = OxmlElement("w:p")
+    if align:
+        pp = OxmlElement("w:pPr")
+        jc = OxmlElement("w:jc")
+        jc.set(qn("w:val"), align)
+        pp.append(jc)
+        p.append(pp)
     r = OxmlElement("w:r")
     if bold:
         rp = OxmlElement("w:rPr")
@@ -331,7 +337,7 @@ def make_biz_table(header_text, rows_data):
     tg.append(OxmlElement("w:gridCol")); tg[-1].set(qn("w:w"), "900")
     tg.append(OxmlElement("w:gridCol")); tg[-1].set(qn("w:w"), "8100"); tbl.append(tg)
     tr0 = OxmlElement("w:tr")
-    tr0.append(make_cell_oxml(header_text, grid_span=2, bold=True, bg=HEADER_BG))
+    tr0.append(make_cell_oxml(header_text, grid_span=2, bold=True, bg=HEADER_BG, align="center"))
     tbl.append(tr0)
     tr1 = OxmlElement("w:tr")
     tr1.append(make_cell_oxml("步骤", bold=True, bg=HEADER_BG))
