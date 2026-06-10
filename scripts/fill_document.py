@@ -47,6 +47,7 @@ def read_excel(excel_path, service_dir):
             v = ws.cell(row=r, column=c).value
             rd[headers[c - 1]] = str(v).strip() if v is not None else ""
         if rd.get("服务目录") == service_dir:
+            rd["_row"] = r
             rows.append(rd)
     if not rows:
         raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
@@ -177,7 +178,7 @@ try {{
     $tocCount = $doc.TablesOfContents.Count
     for ($i = $tocCount; $i -ge 1; $i--) {{ $doc.TablesOfContents.Item($i).Delete() }}
     for ($i = 1; $i -le $doc.Paragraphs.Count; $i++) {{
-        if ($doc.Paragraphs.Item($i).Range.Text -match "文档介绍") {{
+        if ($doc.Paragraphs.Item($i).Range.Text -match "文档介绍" -or $doc.Paragraphs.Item($i).Range.Text -match "需求来源") {{
             if ($i -gt 1) {{
                 $tocRange = $doc.Paragraphs.Item($i - 1).Range
                 $toc = $doc.TablesOfContents.Add($tocRange, $true, 1, 3, $false, "", $true, $true)
@@ -453,6 +454,55 @@ def extract_images_from_excel(excel_path):
     ])
     return {pos: all_images[i] if i < len(all_images) else None for i, pos in enumerate(positions)}
 
+
+def extract_images_via_cellimages(excel_path):
+    """Parse xl/cellimages.xml (WPS format) to get image bytes by name."""
+    import zipfile as _zf
+    result = {}
+    with _zf.ZipFile(excel_path, 'r') as zf:
+        if 'xl/cellimages.xml' not in zf.namelist():
+            return result
+        ci = zf.read('xl/cellimages.xml').decode('utf-8')
+        name_to_rid = {}
+        for block in re.findall(r'<etc:cellImage>(.*?)</etc:cellImage>', ci, re.DOTALL):
+            nm = re.search(r'name="([^"]+)"', block)
+            rm = re.search(r'r:embed="(rId\d+)"', block)
+            if nm and rm:
+                name_to_rid[nm.group(1)] = rm.group(1)
+        rels = zf.read('xl/_rels/cellimages.xml.rels').decode('utf-8')
+        rid_to_file = {}
+        for m in re.finditer(r'Id="(rId\d+)".*?Target="(media/[^"]+)"', rels):
+            rid_to_file[m.group(1)] = m.group(2)
+        for name, rid in name_to_rid.items():
+            if rid in rid_to_file:
+                try:
+                    result[name] = zf.read('xl/' + rid_to_file[rid])
+                except:
+                    pass
+    return result
+
+
+def match_images_to_cells(excel_path, img_bytes_by_name, img_cols, row_numbers):
+    """Match DISPIMG formulas to images by name for given row numbers."""
+    wb = openpyxl.load_workbook(excel_path, data_only=True)
+    ws = wb.active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    result = {}
+    for r in row_numbers:
+        for cn in img_cols:
+            if cn not in headers:
+                continue
+            ci = headers.index(cn) + 1
+            val = ws.cell(row=r, column=ci).value
+            if val and 'DISPIMG' in str(val):
+                m = re.search(r'ID_([A-F0-9]+)', str(val))
+                if m:
+                    iname = "ID_" + m.group(1)
+                    if iname in img_bytes_by_name:
+                        result[(r, cn)] = img_bytes_by_name[iname]
+    wb.close()
+    return result
+
 def load_catalog_data(catalog_path, all_codes):
     """Load resource info and field data from catalog Excel."""
     ensure_module("pandas")
@@ -640,6 +690,168 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
 
 
 # ══════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
+# 03-数据报表_上线记录 Fill Logic
+# ══════════════════════════════════════════════════════════════
+
+def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
+    """Fill 03-数据报表_上线记录 template."""
+    img_cols = ["上线交付截图1", "上线交付截图2", "使用记录截图1", "使用记录截图2"]
+    print("提取图片...")
+    imgs = extract_images_via_cellimages(excel_path)
+    row_nums = set(rd["_row"] for rd in data_rows)
+    cell_imgs = match_images_to_cells(excel_path, imgs, img_cols, row_nums)
+    print(f"匹配到 {len(cell_imgs)} 张图片")
+
+    doc = Document(template_path)
+    body = doc.element.body
+
+    S = {}
+    for sn in ["Heading 1", "Heading 2", "Heading 3", "Body Text", "Normal"]:
+        try:
+            S[sn] = doc.styles[sn].style_id
+        except:
+            S[sn] = sn
+
+    # Find key positions
+    src_para = None
+    desc_para = None
+    for i, p in enumerate(doc.paragraphs):
+        if p.style.name == "Heading 1" and "需求来源" in p.text:
+            src_para = i
+            if i + 1 < len(doc.paragraphs):
+                desc_para = i + 1
+            break
+    if src_para is None:
+        raise ValueError("模板中未找到'需求来源'章节")
+
+    children = list(body)
+    src_body = next(j for j, c in enumerate(children) if c is doc.paragraphs[src_para]._element)
+
+    # Find table after 需求来源
+    tbl_body = None
+    for j in range(src_body + 1, len(children)):
+        if children[j].tag == qn('w:tbl'):
+            tbl_body = j
+            break
+
+    # Find first 工单 Heading 1
+    gd_body = None
+    for j in range(tbl_body + 1 if tbl_body else src_body + 1, len(children)):
+        if children[j].tag == qn('w:p'):
+            for p in doc.paragraphs:
+                if p._element is children[j] and p.style.name == "Heading 1" and "上线记录" in p.text:
+                    gd_body = j
+                    break
+        if gd_body:
+            break
+
+    # Update description
+    ureq = len(set(r["需求单号"] for r in data_rows))
+    ugd = len(set(r["工单号"] for r in data_rows))
+    trep = sum(int(r.get("报表统计次数", 0) or 0) for r in data_rows)
+    nd = f"服务周期内，共有{ureq}张需求单，{ugd}张工单涉及{trep}次数据报表服务。具体需求单、工单和产出如下表："
+    dp = doc.paragraphs[desc_para]
+    if dp.runs:
+        dp.runs[0].text = nd
+    for rn in dp.runs[1:]:
+        rn.text = ""
+    
+    # Fill table with solid borders
+    tbl = children[tbl_body]
+    for tr in tbl.findall(qn('w:tr'))[1:]:
+        tbl.remove(tr)
+    tblPr = tbl.find(qn('w:tblPr'))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr")
+        tbl.insert(0, tblPr)
+    for eb in tblPr.findall(qn('w:tblBorders')):
+        tblPr.remove(eb)
+    for ts in tblPr.findall(qn('w:tblStyle')):
+        tblPr.remove(ts)
+    add_solid_borders(tblPr)
+
+    for idx, rd in enumerate(data_rows):
+        tr = OxmlElement("w:tr")
+        tr.append(make_cell_oxml(str(idx + 1)))
+        tr.append(make_cell_oxml(rd.get("需求单号", "")))
+        tr.append(make_cell_oxml(rd.get("工单号", "")))
+        tr.append(make_cell_oxml(rd.get("工单内容", "")))
+        tr.append(make_cell_oxml(rd.get("报表统计次数", "")))
+        tbl.append(tr)
+
+    # Total row
+    trt = OxmlElement("w:tr")
+    trt.append(make_cell_oxml("合计", grid_span=2, bold=True))
+    trt.append(make_cell_oxml(""))
+    trt.append(make_cell_oxml(""))
+    trt.append(make_cell_oxml(str(trep), bold=True))
+    tbl.append(trt)
+    print(f"表格: {len(data_rows)} 行 + 合计")
+
+    # Remove old 工单 content
+    if gd_body:
+        children = list(body)
+        for j in range(len(children) - 1, gd_body - 1, -1):
+            body.remove(children[j])
+
+    # Build 工单 sections
+    body.append(mp("", S["Normal"]))
+    print(f"构建 {len(data_rows)} 个工单章节...")
+    for rd in data_rows:
+        gd = rd.get("工单内容", "")
+        body.append(mp(f"{gd}的上线记录", S["Heading 1"]))
+        body.append(mp("产出说明", S["Heading 2"]))
+        body.append(mp(f"需求编号：\t{rd.get('需求单号', '')}\t对应工单编号：\t{rd.get('工单号', '')}", S["Body Text"]))
+        body.append(mp(f"需求描述：{rd.get('需求描述', '')}", S["Body Text"], 480))
+        body.append(mp(f"统计报表：{rd.get('报表统计次数', '')}次。", S["Normal"]))
+        body.append(mp("上线交付截图", S["Heading 2"]))
+        body.append(mp("", S["Body Text"]))
+        body.append(mp("", S["Body Text"]))
+        body.append(mp("使用记录", S["Heading 2"]))
+        body.append(mp("使用记录如下：", S["Body Text"]))
+        body.append(mp("", S["Body Text"]))
+        body.append(mp("", S["Body Text"]))
+
+    doc.save(output_path)
+
+    # Insert images
+    print("插入图片...")
+    doc2 = Document(output_path)
+    h2s = [(i, p) for i, p in enumerate(doc2.paragraphs) if p.style.name == "Heading 2"]
+    gi = 0
+    for pi, p in h2s:
+        if p.text.strip() == "上线交付截图":
+            if gi < len(data_rows):
+                rn = data_rows[gi]["_row"]
+                for o, cn in enumerate(["上线交付截图1", "上线交付截图2"]):
+                    tpi = pi + 1 + o
+                    if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
+                        tp = doc2.paragraphs[tpi]
+                        tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                        tf.write(cell_imgs[(rn, cn)])
+                        tf.close()
+                        tp.add_run().add_picture(tf.name, width=Inches(5.5))
+                        os.unlink(tf.name)
+        elif p.text.strip() == "使用记录":
+            if gi < len(data_rows):
+                rn = data_rows[gi]["_row"]
+                for o, cn in enumerate(["使用记录截图1", "使用记录截图2"]):
+                    tpi = pi + 2 + o
+                    if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
+                        tp = doc2.paragraphs[tpi]
+                        tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                        tf.write(cell_imgs[(rn, cn)])
+                        tf.close()
+                        tp.add_run().add_picture(tf.name, width=Inches(5.5))
+                        os.unlink(tf.name)
+                gi += 1
+
+    doc2.save(output_path)
+    update_toc_via_com(output_path)
+    return output_path
+
 # Dispatcher
 # ══════════════════════════════════════════════════════════════
 
@@ -657,8 +869,10 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         if not os.path.exists(catalog_path):
             raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
         return fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path)
+    elif material_type == "03-数据报表_上线记录":
+        return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 02-数据报表_设计文档")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录")
 
 
 # ══════════════════════════════════════════════════════════════
