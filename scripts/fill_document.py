@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 验收文档自动填充脚本 - 支持多种材料类型
@@ -23,12 +23,14 @@ def ensure_module(name, pip_name=None):
 
 ensure_module("openpyxl")
 ensure_module("docx", "python-docx")
+ensure_module("olefile")
 
 import openpyxl
 from docx import Document
 from docx.shared import Inches
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import struct
 
 HEADER_BG = "F1F1F1"
 
@@ -48,6 +50,8 @@ def read_excel(excel_path, service_dir):
             rd[headers[c - 1]] = str(v).strip() if v is not None else ""
         if rd.get("服务目录") == service_dir:
             rd["_row"] = r
+            rd["_vml_row"] = r - 1
+            rd["_vml_col"] = headers.index("业务逻辑") if "业务逻辑" in headers else -1
             rows.append(rd)
     if not rows:
         raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
@@ -64,6 +68,10 @@ def add_solid_borders(tblPr):
         borders.append(e)
     tblPr.append(borders)
 
+
+def xml_safe(t):
+    if not t: return ""
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', t)
 def mp(text, style_id, indent=None):
     p = OxmlElement("w:p")
     pr = OxmlElement("w:pPr")
@@ -214,12 +222,147 @@ try {{
 # 01-数据报表_需求文档 Fill Logic
 # ══════════════════════════════════════════════════════════════
 
+
+def extract_ole_by_cell(excel_path):
+    import olefile as _ole
+    result = {}
+    with zipfile.ZipFile(excel_path, 'r') as zf:
+        vml = zf.read('xl/drawings/vmlDrawing1.vml').decode('utf-8')
+        sx = zf.read('xl/worksheets/sheet1.xml').decode('utf-8')
+        rx = zf.read('xl/worksheets/_rels/sheet1.xml.rels').decode('utf-8')
+        vml_shapes = {}
+        for m in re.finditer(r'<v:shape\b(.*?)</v:shape>', vml, re.DOTALL):
+            body = m.group(1); id_m = re.search(r'id="([^"]+)"', body)
+            am = re.search(r'<x:Anchor>([^<]+)</x:Anchor>', body)
+            if id_m and am:
+                parts = am.group(1).split(',')
+                vml_shapes[id_m.group(1)] = {'row': int(parts[2].strip()), 'col': int(parts[0].strip()), 'ole': 'o:ole="t"' in body}
+        ole_map = {}
+        for m in re.finditer(r'<oleObject[^>]*shapeId="(\d+)"[^>]*r:id="(rId\d+)"', sx):
+            sn = m.group(1)
+            if sn not in ole_map: ole_map[sn] = m.group(2)
+        rid2f = {}
+        for m in re.finditer(r'<Relationship[^>]*Id="(rId\d+)"[^>]*oleObject[^>]*Target="([^"]+)"', rx):
+            rid2f[m.group(1)] = m.group(2).split('/')[-1]
+        for sn, rid in ole_map.items():
+            if rid not in rid2f: continue
+            for vid, vs in vml_shapes.items():
+                if vs.get('ole') and vid.endswith('_s' + sn):
+                    fn = rid2f[rid]; vr = vs['row']; vc = vs['col']
+                    try: od = zf.read(f'xl/embeddings/{fn}')
+                    except: continue
+                    tf = tempfile.NamedTemporaryFile(suffix='.bin', delete=False)
+                    tf.write(od); tf.close()
+                    ole = _ole.OleFileIO(tf.name)
+                    wd = ole.openstream('WordDocument').read()
+                    ole.close(); os.unlink(tf.name)
+                    chunks = []; i = 0
+                    while i < len(wd) - 1:
+                        cc = struct.unpack_from('<H', wd, i)[0]
+                        if 0x20 <= cc <= 0xFFFF and cc != 0xFFFE:
+                            si = i
+                            while i < len(wd) - 1:
+                                cc2 = struct.unpack_from('<H', wd, i)[0]
+                                if cc2 in (0x000D, 0x0007, 0x0000): break
+                                i += 2
+                            try:
+                                text = wd[si:i].decode('utf-16-le', errors='replace')
+                                if len(text.strip()) > 2: chunks.append(text)
+                            except: pass
+                        i += 2
+                    raw = ''.join(chunks)
+                    clean = re.sub(r'[^\u4e00-\u9fff\u3000-\u303f\uff00-\uffefa-zA-Z0-9\s\.\,\;\:\!\?\-\+\=\(\)\[\]\{\}\/\\\@\#\%\&\*_\u201c\u201d\u2018\u2019\u3001\u3002\u2014\u2026\n\r\t]', '', raw)
+                    clean = re.sub(r'\n{3,}', '\n\n', clean)
+                    logic = clean
+                    m2 = re.search(r'需求处理逻辑(.+)', clean, re.DOTALL)
+                    if m2: logic = m2.group(1)
+                    em2 = re.search(r'(需求验收标准|完成时间|资源保证|风险评估)', logic)
+                    if em2: logic = logic[:em2.start()]
+                    result[(vr, vc)] = logic.strip()
+                    break
+    return result
 def compute_stats(data_rows):
     unique_reqs = len(set(r["需求单号"] for r in data_rows if r["需求单号"]))
     unique_wos = len(set(r["工单号"] for r in data_rows if r["工单号"]))
     total_cnt = sum(int(r["报表统计次数"]) for r in data_rows if r["报表统计次数"].isdigit())
     return unique_reqs, unique_wos, total_cnt
 
+
+def summarize_biz_logic(text):
+    if not text: return [("1", "详见附件需求规格说明书")]
+    steps = []; text = text.strip()
+    markers = list(re.finditer(r'(?:^|(?<=[\n\u3002\u3001])\s*)(\d+)[.\u3001)\uff09]\s*', text))
+    if len(markers) >= 2:
+        for i, m in enumerate(markers):
+            start = m.end(); end = markers[i+1].start() if i+1 < len(markers) else len(text)
+            cp = text[start:end].strip()
+            if len(cp) > 3: steps.append((str(i+1), xml_safe(cp[:250])))
+    else:
+        segs = re.split(r'(?<=[。、])\s*', text); sn = 1; cur = ""
+        for seg in segs:
+            seg = seg.strip()
+            if not seg: continue
+            if len(cur) + len(seg) > 200 and cur:
+                steps.append((str(sn), xml_safe(cur[:250]))); sn += 1; cur = seg
+            else:
+                cur = (cur + "。" + seg) if cur else seg
+        if cur: steps.append((str(sn), xml_safe(cur[:250])))
+    if not steps: steps = [("1", xml_safe(text[:200]))]
+    return steps[:15]
+
+
+def parse_report_list(text):
+    if not text: return []
+    items = []
+    for line in text.strip().split('\n'):
+        line = line.strip()
+        if not line: continue
+        parts = line.rsplit(None, 1) if ' ' in line else [line, '']
+        cn = parts[0].strip(); en = parts[1].strip() if len(parts) > 1 else ''
+        if cn: items.append((cn, en))
+    return items
+
+
+def make_biz_table(header_text, rows_data):
+    tbl = OxmlElement("w:tbl"); tp = OxmlElement("w:tblPr")
+    tw = OxmlElement("w:tblW"); tw.set(qn("w:w"), "5000"); tw.set(qn("w:type"), "pct"); tp.append(tw)
+    add_solid_borders(tp); tbl.append(tp)
+    tg = OxmlElement("w:tblGrid")
+    tg.append(OxmlElement("w:gridCol")); tg[-1].set(qn("w:w"), "900")
+    tg.append(OxmlElement("w:gridCol")); tg[-1].set(qn("w:w"), "8100"); tbl.append(tg)
+    tr0 = OxmlElement("w:tr")
+    tr0.append(make_cell_oxml(header_text, grid_span=2, bold=True, bg=HEADER_BG))
+    tbl.append(tr0)
+    tr1 = OxmlElement("w:tr")
+    tr1.append(make_cell_oxml("步骤", bold=True, bg=HEADER_BG))
+    tr1.append(make_cell_oxml("说明", bold=True, bg=HEADER_BG))
+    tbl.append(tr1)
+    for sn, st in rows_data:
+        tr = OxmlElement("w:tr")
+        tr.append(make_cell_oxml(sn))
+        tr.append(make_cell_oxml(st))
+        tbl.append(tr)
+    return tbl
+
+
+def make_stats_source_table(headers, rows_data):
+    tbl = OxmlElement("w:tbl"); tp = OxmlElement("w:tblPr")
+    tw = OxmlElement("w:tblW"); tw.set(qn("w:w"), "5000"); tw.set(qn("w:type"), "pct"); tp.append(tw)
+    add_solid_borders(tp); tbl.append(tp)
+    n = len(headers)
+    tg = OxmlElement("w:tblGrid")
+    for _ in range(n):
+        gc = OxmlElement("w:gridCol"); gc.set(qn("w:w"), str(9000 // n)); tg.append(gc)
+    tbl.append(tg)
+    tr = OxmlElement("w:tr")
+    for h in headers:
+        tr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG))
+    tbl.append(tr)
+    for rd in rows_data:
+        tr = OxmlElement("w:tr")
+        for v in rd: tr.append(make_cell_oxml(v))
+        tbl.append(tr)
+    return tbl
 def fill_requirement_doc(data_rows, template_path, output_path):
     """填充 01-数据报表_需求文档"""
     req_count, wo_count, total_reports = compute_stats(data_rows)
@@ -852,6 +995,195 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
     update_toc_via_com(output_path)
     return output_path
 
+# ================================================================================
+# 01-数据统计分析_需求文档 Fill Logic
+# ================================================================================
+
+def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path):
+    """填充 01-数据统计分析_需求文档"""
+    print(f"数据: {len(data_rows)} 条")
+    
+    # Extract OLE attachments
+    print("提取业务逻辑附件...")
+    obc = extract_ole_by_cell(excel_path)
+    bts = {}
+    for rd in data_rows:
+        k = (rd.get('_vml_row', -1), rd.get('_vml_col', -1))
+        if k in obc:
+            bts[rd.get("工单内容", "")] = obc[k]
+    print(f"附件匹配: {len(bts)} 个")
+
+    doc = Document(template_path)
+    body = doc.element.body
+
+    S = {}
+    for sn in ["Heading 1", "Heading 2", "Heading 3", "Body Text", "Normal"]:
+        try: S[sn] = doc.styles[sn].style_id
+        except: S[sn] = sn
+
+    # Find "需求来源" description paragraph to update count
+    src_para = desc_para = None
+    for i, p in enumerate(doc.paragraphs):
+        if p.style.name == "Heading 2" and "需求来源" in p.text:
+            src_para = i; desc_para = i + 1 if i + 1 < len(doc.paragraphs) else None; break
+    if src_para is None:
+        raise ValueError("未找到需求来源")
+
+    # Find "需求内容" H1
+    content_h1 = None
+    for i, p in enumerate(doc.paragraphs):
+        if p.style.name == "Heading 1" and "需求内容" in p.text:
+            content_h1 = i; break
+
+    # Build body children index
+    children = list(body)
+    src_body = next(j for j, c in enumerate(children) if c is doc.paragraphs[src_para]._element)
+    tbl_body = next(j for j in range(src_body + 1, len(children)) if children[j].tag == qn('w:tbl'))
+    content_body = next(j for j, c in enumerate(children) if c is doc.paragraphs[content_h1]._element)
+
+    # Find first H2 after 需求内容 (the first old gongdan)
+    gd_body = None
+    for j in range(content_body + 1, len(children)):
+        if children[j].tag == qn('w:p'):
+            for p in doc.paragraphs:
+                if p._element is children[j] and p.style.name == "Heading 2":
+                    gd_body = j; break
+        if gd_body is not None: break
+
+    # Find "其他要求" H1
+    other_h1_body = None
+    for j in range(content_body + 1, len(children)):
+        if children[j].tag == qn('w:p'):
+            for p in doc.paragraphs:
+                if p._element is children[j] and p.style.name == "Heading 1" and "其他要求" in p.text:
+                    other_h1_body = j; break
+        if other_h1_body is not None: break
+
+    # Update count description
+    ureq = len(set(r["需求单号"] for r in data_rows))
+    ugd = len(set(r["工单号"] for r in data_rows))
+    trep = sum(int(r.get("报表统计次数", 0) or 0) for r in data_rows)
+    nd = f"服务周期内，共有{ureq}张需求单，{ugd}张工单涉及{trep}次数据统计分析。具体需求单、工单和产出如下表："
+    
+    dp = doc.paragraphs[desc_para]
+    if dp.runs:
+        dp.runs[0].text = nd
+    for rn in dp.runs[1:]:
+        rn.text = ""
+
+    # Rebuild table
+    tbl = children[tbl_body]
+    for tr in tbl.findall(qn('w:tr'))[1:]:
+        tbl.remove(tr)
+    tblPr = tbl.find(qn('w:tblPr'))
+    if tblPr is None:
+        tblPr = OxmlElement("w:tblPr"); tbl.insert(0, tblPr)
+    for eb in tblPr.findall(qn('w:tblBorders')):
+        tblPr.remove(eb)
+    for ts in tblPr.findall(qn('w:tblStyle')):
+        tblPr.remove(ts)
+    add_solid_borders(tblPr)
+
+    # Fixed layout + column widths 1:2:2:4:1
+    tw_el = tblPr.find(qn('w:tblW'))
+    if tw_el is not None:
+        tw_el.set(qn('w:type'), 'pct'); tw_el.set(qn('w:w'), '5000')
+    for tl in tblPr.findall(qn('w:tblLayout')):
+        tblPr.remove(tl)
+    tl = OxmlElement('w:tblLayout'); tl.set(qn('w:type'), 'fixed'); tblPr.append(tl)
+    tg = tbl.find(qn('w:tblGrid'))
+    if tg is not None:
+        for gc in list(tg):
+            tg.remove(gc)
+        for w in ["900", "1800", "1800", "3600", "900"]:
+            gc = OxmlElement("w:gridCol"); gc.set(qn("w:w"), w); tg.append(gc)
+
+    for idx, rd in enumerate(data_rows):
+        tr = OxmlElement("w:tr")
+        tr.append(make_cell_oxml(str(idx + 1)))
+        tr.append(make_cell_oxml(rd.get("需求单号", "")))
+        tr.append(make_cell_oxml(rd.get("工单号", "")))
+        tr.append(make_cell_oxml(rd.get("工单内容", "")))
+        tr.append(make_cell_oxml(rd.get("报表统计次数", "")))
+        tbl.append(tr)
+
+    trt = OxmlElement("w:tr")
+    trt.append(make_cell_oxml("合计", grid_span=2, bold=True))
+    trt.append(make_cell_oxml(""))
+    trt.append(make_cell_oxml(""))
+    trt.append(make_cell_oxml(str(trep), bold=True))
+    tbl.append(trt)
+    print(f"表格: {len(data_rows)} 行 + 合计")
+
+    # Remove old gongdan content between first gongdan H2 and 其他要求
+    if gd_body is not None:
+        children2 = list(body)
+        end_idx = other_h1_body if other_h1_body else len(children2)
+        for j in range(end_idx - 1, gd_body - 1, -1):
+            body.remove(children2[j])
+
+    # Find insertion point: right before "其他要求"
+    insert_before = None
+    children3 = list(body)
+    for j, child in enumerate(children3):
+        if child.tag == qn('w:p'):
+            for p in doc.paragraphs:
+                if p._element is child and p.style.name == "Heading 1" and "其他要求" in p.text:
+                    insert_before = child
+                    break
+        if insert_before is not None: break
+
+    # Build new gongdan content
+    print(f"构建 {len(data_rows)} 个工单章节...")
+    new_elems = [mp("", S["Normal"])]
+
+    # Need bold mp variant
+    def mp_bold(text, style_id, indent=None):
+        p = OxmlElement("w:p"); pr = OxmlElement("w:pPr")
+        ps = OxmlElement("w:pStyle"); ps.set(qn("w:val"), style_id); pr.append(ps)
+        if indent:
+            i = OxmlElement("w:ind"); i.set(qn("w:firstLine"), str(indent)); pr.append(i)
+        p.append(pr)
+        r = OxmlElement("w:r"); rp = OxmlElement("w:rPr"); rp.append(OxmlElement("w:b")); r.append(rp)
+        t = OxmlElement("w:t"); t.text = xml_safe(text); t.set(qn("xml:space"), "preserve")
+        r.append(t); p.append(r); return p
+
+    for rd in data_rows:
+        gd = rd.get("工单内容", "")
+        new_elems.append(mp(xml_safe(gd), S["Heading 2"]))
+        new_elems.append(mp("业务描述", S["Heading 3"]))
+        new_elems.append(mp(xml_safe(rd.get("业务描述", "")), S["Body Text"], 480))
+        ri = parse_report_list(rd.get("统计分析结果表清单", "")); nr = len(ri)
+        new_elems.append(mp(f"本次工作拟产出{nr}个统计分析结果表。", S["Body Text"]))
+        if ri:
+            rr = [[str(i + 1), xml_safe(cn), xml_safe(en)] for i, (cn, en) in enumerate(ri)]
+            new_elems.append(make_stats_source_table(["序号", "结果中文表名称", "表名"], rr))
+        new_elems.append(mp("", S["Body Text"]))
+        new_elems.append(mp("业务逻辑", S["Heading 3"]))
+        gk = rd.get("工单内容", "")
+        biz = bts.get(gk, "")
+        steps = summarize_biz_logic(biz) if biz else [("1", "无附件，请手动补充业务逻辑说明。")]
+        new_elems.append(make_biz_table("业务逻辑说明", steps))
+        new_elems.append(mp("数据加工周期", S["Heading 3"]))
+        new_elems.append(mp(f"数据统计分析执行周期：{xml_safe(rd.get('数据统计分析执行周期', ''))}。", S["Body Text"]))
+        new_elems.append(mp(f"数据更新要求：{xml_safe(rd.get('数据更新要求', ''))}。", S["Body Text"]))
+        new_elems.append(mp(f"数据量对后续运维的特殊要求：{xml_safe(rd.get('数据量对后续运维的特殊要求', ''))}。", S["Body Text"]))
+
+    # Insert new elements at the right position
+    if insert_before is not None:
+        parent = insert_before.getparent()
+        idx = list(parent).index(insert_before)
+        for elem in reversed(new_elems):
+            parent.insert(idx, elem)
+    else:
+        for elem in new_elems:
+            body.append(elem)
+
+    doc.save(output_path)
+    print(f"已保存: {output_path}")
+    update_toc_via_com(output_path)
+    return output_path
+
 # Dispatcher
 # ══════════════════════════════════════════════════════════════
 
@@ -869,10 +1201,12 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         if not os.path.exists(catalog_path):
             raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
         return fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path)
+    elif material_type == "01-数据统计分析_需求文档":
+        return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path)
     elif material_type == "03-数据报表_上线记录":
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录")
 
 
 # ══════════════════════════════════════════════════════════════
