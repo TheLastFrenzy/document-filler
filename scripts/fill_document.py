@@ -177,12 +177,12 @@ try {{
     $tocCount = $doc.TablesOfContents.Count
     for ($i = $tocCount; $i -ge 1; $i--) {{ $doc.TablesOfContents.Item($i).Delete() }}
     for ($i = 1; $i -le $doc.Paragraphs.Count; $i++) {{
-        if ($doc.Paragraphs.Item($i).Range.Text -match "修订记录") {{
-            $range = $doc.Range($doc.Paragraphs.Item($i).Range.Start, $doc.Paragraphs.Item($i).Range.Start)
-            $range.InsertBefore("`r`n")
-            $tocRange = $doc.Range($range.Start - 2, $range.Start - 1)
-            $toc = $doc.TablesOfContents.Add($tocRange, $true, 1, 3, $false, "", $true, $true)
-            $toc.Update()
+        if ($doc.Paragraphs.Item($i).Range.Text -match "文档介绍") {{
+            if ($i -gt 1) {{
+                $tocRange = $doc.Paragraphs.Item($i - 1).Range
+                $toc = $doc.TablesOfContents.Add($tocRange, $true, 1, 3, $false, "", $true, $true)
+                $toc.Update()
+            }}
             break
         }}
     }}
