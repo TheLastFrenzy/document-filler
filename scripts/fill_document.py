@@ -696,30 +696,17 @@ def fill_design_doc(data_rows, template_path, output_path, catalog_path):
 
 def fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path):
     """Complete 02-设计文档 fill, with image extraction from excel."""
-    img_by_pos = extract_images_from_excel(excel_path)
+    # Extract images via cellimages.xml for name-based matching (not positional)
+    imgs = extract_images_via_cellimages(excel_path)
+    row_nums = set(rd["_row"] for rd in data_rows)
+    img_cols = ["02-数据报表_设计文档-数据内容截图", "数据处理逻辑"]
+    cell_imgs = match_images_to_cells(excel_path, imgs, img_cols, row_nums)
+    print(f"匹配到 {len(cell_imgs)} 张图片")
 
-    # Map images to rows based on DISPIMG column
-    # Need to map data_rows back to their row indices. Re-read excel for positions.
-    wb = openpyxl.load_workbook(excel_path, data_only=True)
-    ws = wb.active
-    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
-    col_idx = {h: i + 1 for i, h in enumerate(headers)}
-
-    for r in range(2, ws.max_row + 1):
-        svc = str(ws.cell(row=r, column=col_idx.get("服务目录", 1)).value or "").strip()
-        if svc != data_rows[0].get("服务目录", ""):
-            continue
-        gd = str(ws.cell(row=r, column=col_idx.get("工单内容", 1)).value or "").strip()
-        for rd in data_rows:
-            if rd["工单内容"] == gd:
-                img_content_col = col_idx.get("02-数据报表_设计文档-数据内容截图")
-                img_logic_col = col_idx.get("数据处理逻辑")
-                if img_content_col:
-                    rd["_img_content"] = img_by_pos.get((r, img_content_col))
-                if img_logic_col:
-                    rd["_img_logic"] = img_by_pos.get((r, img_logic_col))
-                    rd["_logic_is_img"] = "DISPIMG" in rd.get("数据处理逻辑", "")
-                break
+    for rd in data_rows:
+        rd["_img_content"] = cell_imgs.get((rd["_row"], "02-数据报表_设计文档-数据内容截图"))
+        rd["_img_logic"] = cell_imgs.get((rd["_row"], "数据处理逻辑"))
+        rd["_logic_is_img"] = "DISPIMG" in rd.get("数据处理逻辑", "")
 
     # Collect all directory codes
     all_codes = set()
