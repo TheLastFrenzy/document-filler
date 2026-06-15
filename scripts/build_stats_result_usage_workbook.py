@@ -239,6 +239,17 @@ def oracle_column_comments(sqls: list[str], target: str) -> dict[str, str]:
     return comments
 
 
+def strip_leading_sql_comments(text: str) -> str:
+    value = text.strip()
+    while True:
+        next_value = re.sub(r"^\s*--[^\r\n]*(?:\r?\n|$)", "", value, count=1)
+        next_value = re.sub(r"^\s*/\*.*?\*/", "", next_value, count=1, flags=re.S)
+        next_value = next_value.strip()
+        if next_value == value:
+            return value
+        value = next_value
+
+
 def parse_result_fields_from_sql(sqls: list[str], target: str) -> list[dict[str, str]]:
     body = None
     body_table = None
@@ -257,6 +268,7 @@ def parse_result_fields_from_sql(sqls: list[str], target: str) -> list[dict[str,
     oracle_comments = oracle_column_comments(sqls, body_table or target)
     fields: list[dict[str, str]] = []
     for raw in split_columns(body):
+        raw = strip_leading_sql_comments(raw)
         if re.match(r"^(primary|unique|constraint|key|index|partitioned|stored)\b", raw, flags=re.I):
             continue
         match = re.match(r"[`\"]?([A-Za-z_][\w]*)[`\"]?\s+(.*)$", raw, flags=re.S)
