@@ -9,7 +9,7 @@
     python fill_document.py --service-dir "N08-数据报表服务" --material-type "02-数据报表_设计文档" --excel "台账清单.xlsx" --template "模板.docx" --catalog "数据目录数据.xlsx" --output "输出.docx"
 """
 
-import argparse, re, sys, os, subprocess, io, zipfile, tempfile
+import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -1180,6 +1180,28 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
 # Dispatcher
 # ══════════════════════════════════════════════════════════════
 
+def fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path):
+    """Fill 04-数据统计分析_结果表及使用说明 workbook template."""
+    if not catalog_path:
+        raise ValueError("04-数据统计分析_结果表及使用说明需要 --catalog 参数指定数据目录数据路径")
+    if not os.path.exists(catalog_path):
+        raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
+    ensure_module("PIL", "pillow")
+    builder_path = os.path.join(os.path.dirname(__file__), "build_stats_result_usage_workbook.py")
+    spec = importlib.util.spec_from_file_location("build_stats_result_usage_workbook", builder_path)
+    module = importlib.util.module_from_spec(spec)
+    if spec.loader is None:
+        raise RuntimeError(f"无法加载生成脚本: {builder_path}")
+    spec.loader.exec_module(module)
+    return module.build_stats_result_usage_workbook(
+        ledger_path=excel_path,
+        service_dir=service_dir,
+        template_path=template_path,
+        output_path=output_path,
+        catalog_path=catalog_path,
+    )
+
+
 def fill_document(excel_path, service_dir, material_type, template_path, output_path, catalog_path=None):
     print(f"台账清单: {excel_path}")
     print(f"筛选条件: 服务目录={service_dir}")
@@ -1196,10 +1218,12 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         return fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path)
     elif material_type == "01-数据统计分析_需求文档":
         return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path)
+    elif material_type == "04-数据统计分析_结果表及使用说明":
+        return fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path)
     elif material_type == "03-数据报表_上线记录":
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录, 04-数据统计分析_结果表及使用说明")
 
 
 # ══════════════════════════════════════════════════════════════
