@@ -1710,6 +1710,25 @@ def fill_stats_result_usage_workbook(excel_path, service_dir, template_path, out
     )
 
 
+def fill_stats_test_pdf(excel_path, service_dir, template_path, output_path):
+    """Fill 03-数据统计分析_测试文档 PDF."""
+    ensure_module("PIL", "pillow")
+    ensure_module("reportlab")
+    builder_path = os.path.join(os.path.dirname(__file__), "build_stats_test_pdf.py")
+    spec = importlib.util.spec_from_file_location("build_stats_test_pdf", builder_path)
+    module = importlib.util.module_from_spec(spec)
+    if spec.loader is None:
+        raise RuntimeError(f"无法加载生成脚本: {builder_path}")
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.build_stats_test_pdf(
+        ledger_path=excel_path,
+        service_dir=service_dir,
+        template_path=template_path,
+        output_path=output_path,
+    )
+
+
 def fill_document(excel_path, service_dir, material_type, template_path, output_path, catalog_path=None):
     print(f"台账清单: {excel_path}")
     print(f"筛选条件: 服务目录={service_dir}")
@@ -1739,11 +1758,13 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         return fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path)
     elif material_type == "04-数据统计分析_结果表及使用说明":
         return fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path)
+    elif material_type == "03-数据统计分析_测试文档":
+        return fill_stats_test_pdf(excel_path, service_dir, template_path, output_path)
     elif material_type == "03-数据报表_上线记录":
         data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 04-数据统计分析_结果表及使用说明")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
 
 
 # ══════════════════════════════════════════════════════════════
