@@ -10,9 +10,14 @@
 """
 
 import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util
+from pathlib import Path
 
 if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        if hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 # ── Dependencies ──
 def ensure_module(name, pip_name=None):
@@ -327,6 +332,184 @@ def parse_report_list(text):
         cn = parts[0].strip(); en = parts[1].strip() if len(parts) > 1 else ''
         if cn: items.append((cn, en))
     return items
+
+
+def norm_table_name(name):
+    text = (name or "").strip()
+    if "." in text:
+        text = text.split(".")[-1]
+    return re.sub(r"[^A-Za-z0-9_]", "", text).upper()
+
+
+def merged_value_getter(ws):
+    merged_values = {}
+    for merged_range in ws.merged_cells.ranges:
+        value = ws.cell(merged_range.min_row, merged_range.min_col).value
+        for row in range(merged_range.min_row, merged_range.max_row + 1):
+            for col in range(merged_range.min_col, merged_range.max_col + 1):
+                merged_values[(row, col)] = value
+
+    def get(row, col):
+        value = ws.cell(row, col).value
+        if value is None:
+            value = merged_values.get((row, col))
+        return str(value).strip() if value is not None else ""
+
+    return get
+
+
+def read_stats_requirement_groups(excel_path, service_dir):
+    wb = openpyxl.load_workbook(excel_path, data_only=True)
+    ws = wb.active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    if "服务目录" not in headers:
+        raise ValueError("台账清单缺少「服务目录」列")
+    get = merged_value_getter(ws)
+    service_col = headers.index("服务目录") + 1
+    logic_col = headers.index("业务逻辑") if "业务逻辑" in headers else -1
+    groups = []
+    by_key = {}
+
+    for row in range(2, ws.max_row + 1):
+        if get(row, service_col) != service_dir:
+            continue
+        record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
+        key = record.get("工单号") or f"{record.get('需求单号', '')}|{record.get('工单内容', '')}|{row}"
+        if key not in by_key:
+            record["_row"] = row
+            record["_vml_row"] = row - 1
+            record["_vml_col"] = logic_col
+            record["results"] = []
+            by_key[key] = record
+            groups.append(record)
+
+        result_text = record.get("统计分析结果表清单", "")
+        for result in parse_report_list(result_text):
+            if result not in by_key[key]["results"]:
+                by_key[key]["results"].append(result)
+
+    for group in groups:
+        group["统计分析结果表清单"] = "\n".join(
+            f"{cn} {en}".strip() for cn, en in group.get("results", [])
+        )
+
+    if not groups:
+        raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
+    return groups
+
+
+def resolve_stats_relation_workbook(template_path, relation_hint=None):
+    candidates = []
+    if relation_hint:
+        candidates.append(Path(relation_hint))
+    template = Path(template_path)
+    candidates.append(template.with_name("04-数据统计分析_结果表及使用说明.xlsx"))
+    candidates.append(template.parent / "04-数据统计分析_结果表及使用说明.xlsx")
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or not candidate.exists():
+            continue
+        seen.add(candidate)
+        try:
+            wb = openpyxl.load_workbook(candidate, read_only=True, data_only=True)
+            if "2、表融合关系" in wb.sheetnames:
+                wb.close()
+                return str(candidate)
+            wb.close()
+        except Exception:
+            continue
+    return None
+
+
+def _parse_relation_title(text):
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    match = re.search(r"([A-Za-z][A-Za-z0-9_$.]{2,})\s*$", value)
+    return norm_table_name(match.group(1)) if match else ""
+
+
+def load_stats_relation_descriptions(relation_path):
+    wb = openpyxl.load_workbook(relation_path, data_only=True)
+    if "2、表融合关系" not in wb.sheetnames:
+        wb.close()
+        return {}
+    ws = wb["2、表融合关系"]
+    descriptions = {}
+    current_result = ""
+    for row in range(1, ws.max_row + 1):
+        first_value = ws.cell(row, 1).value
+        parsed_result = _parse_relation_title(first_value)
+        if parsed_result:
+            current_result = parsed_result
+        for col in range(1, ws.max_column + 1):
+            label = str(ws.cell(row, col).value or "").strip()
+            if label == "文字描述" and current_result:
+                desc = ws.cell(row, col + 1).value if col + 1 <= ws.max_column else ""
+                if desc:
+                    descriptions[current_result] = str(desc).strip()
+                break
+    wb.close()
+    return descriptions
+
+
+def _clean_logic_step(text):
+    text = xml_safe(str(text or ""))
+    text = re.sub(r"^\s*\d+\s*[\.、．)\uff09]?\s*", "", text)
+    text = re.sub(r"[\t ]+", " ", text)
+    return text.strip(" \r\n\t；;。")
+
+
+def split_logic_description(text):
+    text = str(text or "").strip()
+    if not text:
+        return []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    markers = list(re.finditer(r"(?:^|\n)\s*(\d+)\s*(?:[\.、．)\uff09]|\t|\s)\s*", normalized))
+    steps = []
+    if len(markers) >= 2:
+        for idx, marker in enumerate(markers):
+            start = marker.end()
+            end = markers[idx + 1].start() if idx + 1 < len(markers) else len(normalized)
+            piece = _clean_logic_step(normalized[start:end])
+            if piece:
+                steps.append(piece)
+    else:
+        for line in normalized.split("\n"):
+            piece = _clean_logic_step(line)
+            if piece:
+                steps.append(piece)
+
+    if len(steps) <= 1:
+        source = steps[0] if steps else _clean_logic_step(normalized)
+        steps = [
+            _clean_logic_step(piece)
+            for piece in re.split(r"(?<=[。；;])\s*", source)
+            if _clean_logic_step(piece)
+        ]
+
+    return steps[:15]
+
+
+def build_stats_requirement_business_logic_steps(results, descriptions):
+    if not results:
+        return [("1", "未匹配到统计分析结果表，请手动补充业务逻辑说明。")]
+
+    all_steps = []
+    for cn, en in results:
+        desc = descriptions.get(norm_table_name(en), "")
+        pieces = split_logic_description(desc)
+        table_label = f"{cn}（{en}）" if en else cn
+        if not pieces:
+            all_steps.append(f"{table_label}：未在结果表及使用说明中匹配到文字描述，请手动补充。")
+        elif len(results) == 1:
+            all_steps.extend(pieces)
+        else:
+            merged = "；".join(piece.rstrip("。；;") for piece in pieces)
+            all_steps.append(f"{table_label}：{merged}。")
+
+    return [(str(idx), xml_safe(step[:500])) for idx, step in enumerate(all_steps, start=1)]
 
 
 def make_biz_table(header_text, rows_data):
@@ -992,19 +1175,25 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
 # 01-数据统计分析_需求文档 Fill Logic
 # ================================================================================
 
-def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path):
+def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path=None):
     """填充 01-数据统计分析_需求文档"""
     print(f"数据: {len(data_rows)} 条")
-    
-    # Extract OLE attachments
-    print("提取业务逻辑附件...")
-    obc = extract_ole_by_cell(excel_path)
+
+    relation_descriptions = {}
+    if relation_path:
+        print(f"读取表融合关系文字描述: {relation_path}")
+        relation_descriptions = load_stats_relation_descriptions(relation_path)
+        print(f"文字描述匹配: {len(relation_descriptions)} 个结果表")
+
     bts = {}
-    for rd in data_rows:
-        k = (rd.get('_vml_row', -1), rd.get('_vml_col', -1))
-        if k in obc:
-            bts[rd.get("工单内容", "")] = obc[k]
-    print(f"附件匹配: {len(bts)} 个")
+    if not relation_descriptions:
+        print("提取业务逻辑附件...")
+        obc = extract_ole_by_cell(excel_path)
+        for rd in data_rows:
+            k = (rd.get('_vml_row', -1), rd.get('_vml_col', -1))
+            if k in obc:
+                bts[rd.get("工单内容", "")] = obc[k]
+        print(f"附件匹配: {len(bts)} 个")
 
     doc = Document(template_path)
     body = doc.element.body
@@ -1146,7 +1335,7 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
         new_elems.append(mp(xml_safe(gd), S["Heading 2"]))
         new_elems.append(mp("业务描述", S["Heading 3"]))
         new_elems.append(mp(xml_safe(rd.get("业务描述", "")), S["Body Text"], 480))
-        ri = parse_report_list(rd.get("统计分析结果表清单", "")); nr = len(ri)
+        ri = rd.get("results") or parse_report_list(rd.get("统计分析结果表清单", "")); nr = len(ri)
         new_elems.append(mp(f"本次工作拟产出{nr}个统计分析结果表。", S["Body Text"]))
         if ri:
             rr = [[str(i + 1), xml_safe(cn), xml_safe(en)] for i, (cn, en) in enumerate(ri)]
@@ -1154,8 +1343,11 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
         new_elems.append(mp("", S["Body Text"]))
         new_elems.append(mp("业务逻辑", S["Heading 3"]))
         gk = rd.get("工单内容", "")
-        biz = bts.get(gk, "")
-        steps = summarize_biz_logic(biz) if biz else [("1", "无附件，请手动补充业务逻辑说明。")]
+        if relation_descriptions:
+            steps = build_stats_requirement_business_logic_steps(ri, relation_descriptions)
+        else:
+            biz = bts.get(gk, "")
+            steps = summarize_biz_logic(biz) if biz else [("1", "无附件，请手动补充业务逻辑说明。")]
         new_elems.append(make_biz_table("业务逻辑说明", steps))
         new_elems.append(mp("数据加工周期", S["Heading 3"]))
         new_elems.append(mp(f"数据统计分析执行周期：{xml_safe(rd.get('数据统计分析执行周期', ''))}。", S["Body Text"]))
@@ -1206,21 +1398,25 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
     print(f"台账清单: {excel_path}")
     print(f"筛选条件: 服务目录={service_dir}")
     print(f"材料类型: {material_type}")
-    data_rows = read_excel(excel_path, service_dir)
 
     if material_type == "01-数据报表_需求文档":
+        data_rows = read_excel(excel_path, service_dir)
         return fill_requirement_doc(data_rows, template_path, output_path)
     elif material_type == "02-数据报表_设计文档":
+        data_rows = read_excel(excel_path, service_dir)
         if not catalog_path:
             raise ValueError("02-设计文档需要 --catalog 参数指定数据目录数据路径")
         if not os.path.exists(catalog_path):
             raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
         return fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path)
     elif material_type == "01-数据统计分析_需求文档":
-        return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path)
+        data_rows = read_stats_requirement_groups(excel_path, service_dir)
+        relation_path = resolve_stats_relation_workbook(template_path, catalog_path)
+        return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path)
     elif material_type == "04-数据统计分析_结果表及使用说明":
         return fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path)
     elif material_type == "03-数据报表_上线记录":
+        data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
         raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录, 04-数据统计分析_结果表及使用说明")
