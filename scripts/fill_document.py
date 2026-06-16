@@ -803,12 +803,19 @@ def extract_images_via_cellimages(excel_path):
                 name_to_rid[nm.group(1)] = rm.group(1)
         rels = zf.read('xl/_rels/cellimages.xml.rels').decode('utf-8')
         rid_to_file = {}
-        for m in re.finditer(r'Id="(rId\d+)".*?Target="(media/[^"]+)"', rels):
-            rid_to_file[m.group(1)] = m.group(2)
+        for m in re.finditer(r'<Relationship[^>]*Id="(rId\d+)"[^>]*Target="([^"]+)"', rels):
+            target = m.group(2)
+            if target.startswith("../"):
+                target = "xl/" + target[3:]
+            elif target.startswith("xl/"):
+                target = target
+            else:
+                target = "xl/" + target.lstrip("/")
+            rid_to_file[m.group(1)] = target
         for name, rid in name_to_rid.items():
             if rid in rid_to_file:
                 try:
-                    result[name] = zf.read('xl/' + rid_to_file[rid])
+                    result[name] = zf.read(rid_to_file[rid])
                 except:
                     pass
     return result
@@ -1369,6 +1376,315 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
     update_toc_via_com(output_path)
     return output_path
 
+
+# ================================================================================
+# 02-数据统计分析_设计文档 Fill Logic
+# ================================================================================
+
+def image_id_from_formula(formula_text):
+    match = re.search(r'DISPIMG\("([^"]+)"', str(formula_text or ""))
+    return match.group(1) if match else ""
+
+
+def load_stats_design_usage_data(relation_path):
+    if not relation_path:
+        raise ValueError("02-数据统计分析_设计文档需要模板同目录的 04-数据统计分析_结果表及使用说明.xlsx")
+
+    wb = openpyxl.load_workbook(relation_path, data_only=False)
+    source_map = {}
+    if "1、数据源表list" in wb.sheetnames:
+        ws = wb["1、数据源表list"]
+        headers = [str(ws.cell(1, col).value or "").strip() for col in range(1, ws.max_column + 1)]
+        for row in range(2, ws.max_row + 1):
+            rd = {header: str(ws.cell(row, idx + 1).value or "").strip() for idx, header in enumerate(headers) if header}
+            result = norm_table_name(rd.get("数据融合加工表", ""))
+            source = norm_table_name(rd.get("资源信息（表名）", ""))
+            if result and source:
+                source_map.setdefault(result, []).append(rd)
+
+    relation_map = {}
+    if "2、表融合关系" in wb.sheetnames:
+        ws = wb["2、表融合关系"]
+        current = ""
+        for row in range(1, ws.max_row + 1):
+            title = ws.cell(row, 1).value
+            parsed = _parse_relation_title(title)
+            if parsed:
+                current = parsed
+            for col in range(1, ws.max_column + 1):
+                label = str(ws.cell(row, col).value or "").strip()
+                if label == "文字描述" and current:
+                    relation_map.setdefault(current, {})["description"] = str(ws.cell(row, col + 1).value or "").strip()
+                    break
+                if label == "数据处理流程图" and current:
+                    relation_map.setdefault(current, {})["image_formula"] = str(ws.cell(row, col + 1).value or "").strip()
+                    break
+
+    detail_map = {}
+    if "4、数据统计分析结果表详情" in wb.sheetnames:
+        ws = wb["4、数据统计分析结果表详情"]
+        current = ""
+        row = 1
+        while row <= ws.max_row:
+            value_b = str(ws.cell(row, 2).value or "").strip()
+            if norm_table_name(value_b).startswith("FUSION_"):
+                current = norm_table_name(value_b)
+                row += 1
+                continue
+            headers_here = [str(ws.cell(row, col).value or "").strip() for col in range(1, ws.max_column + 1)]
+            if current and "字段中文名" in headers_here and "字段英文名" in headers_here:
+                header_map = {header: idx + 1 for idx, header in enumerate(headers_here) if header}
+                row += 1
+                fields = []
+                while row <= ws.max_row:
+                    first = str(ws.cell(row, 1).value or "").strip()
+                    second = str(ws.cell(row, 2).value or "").strip()
+                    if re.match(r"4\.\d+", first) or norm_table_name(second).startswith("FUSION_"):
+                        row -= 1
+                        break
+                    if any(str(ws.cell(row, col).value or "").strip() for col in range(1, ws.max_column + 1)):
+                        fields.append({header: str(ws.cell(row, col).value or "").strip() for header, col in header_map.items()})
+                    row += 1
+                detail_map[current] = fields
+            row += 1
+    wb.close()
+
+    return source_map, relation_map, detail_map, extract_images_via_cellimages(relation_path)
+
+
+def load_stats_design_catalog(catalog_path, needed_names=None):
+    wb = openpyxl.load_workbook(catalog_path, data_only=True, read_only=True)
+    if "关联资源信息" not in wb.sheetnames:
+        wb.close()
+        return {}
+    ws = wb["关联资源信息"]
+    headers = [str(ws.cell(1, col).value or "").strip() for col in range(1, ws.max_column + 1)]
+    rows = {}
+    for values in ws.iter_rows(min_row=2, values_only=True):
+        rd = {header: str(values[idx] or "").strip() for idx, header in enumerate(headers) if header and idx < len(values)}
+        code = norm_table_name(rd.get("资源编码", ""))
+        if needed_names and code not in needed_names:
+            continue
+        if code and code not in rows:
+            rows[code] = rd
+    wb.close()
+    return rows
+
+
+def make_stats_design_entity_row(table_name, source_rd, resource_info, table_type, seq):
+    key = norm_table_name(table_name)
+    catalog_rd = resource_info.get(key, {})
+    if source_rd:
+        directory_code = source_rd.get("资源编目（非必填）") or catalog_rd.get("数据目录代码", "")
+        resource_name = source_rd.get("资源名称") or catalog_rd.get("资源名称", "")
+        source_name = source_rd.get("资源信息（表名）") or key
+    else:
+        directory_code = catalog_rd.get("数据目录代码", "")
+        resource_name = catalog_rd.get("资源名称", "")
+        source_name = key
+    return [
+        str(seq),
+        directory_code,
+        resource_name,
+        source_name,
+        table_type,
+        catalog_rd.get("业务数据更新周期", ""),
+    ]
+
+
+def find_heading_paragraph(doc, style_name, contains):
+    for paragraph in doc.paragraphs:
+        if paragraph.style.name == style_name and contains in paragraph.text:
+            return paragraph
+    return None
+
+
+def remove_content_after_heading(body, heading_paragraph):
+    found = False
+    for child in list(body):
+        if child is heading_paragraph._element:
+            found = True
+            continue
+        if found and child.tag != qn("w:sectPr"):
+            body.remove(child)
+
+
+def append_body_element(body, element):
+    sect_pr = None
+    for child in list(body):
+        if child.tag == qn("w:sectPr"):
+            sect_pr = child
+            break
+    if sect_pr is not None:
+        body.insert(list(body).index(sect_pr), element)
+    else:
+        body.append(element)
+
+
+def append_image_paragraph(doc, body, image_bytes, missing_text):
+    paragraph = doc.add_paragraph("")
+    append_body_element(body, paragraph._element)
+    if image_bytes:
+        tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tf.write(image_bytes)
+        tf.close()
+        paragraph.add_run().add_picture(tf.name, width=Inches(5.8))
+        os.unlink(tf.name)
+    else:
+        paragraph.text = missing_text
+    return paragraph
+
+
+def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path=None):
+    """填充 02-数据统计分析_设计文档，只生成 Word 文档。"""
+    if not catalog_path:
+        raise ValueError("02-数据统计分析_设计文档需要 --catalog 参数指定数据目录数据路径")
+    if not os.path.exists(catalog_path):
+        raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
+    if not relation_path:
+        relation_path = resolve_stats_relation_workbook(template_path)
+    if not relation_path:
+        raise FileNotFoundError("未找到 04-数据统计分析_结果表及使用说明.xlsx，请放在模板同目录或通过 --catalog 传入")
+
+    print(f"数据: {len(data_rows)} 个工单")
+    programs = []
+    for group in data_rows:
+        for result_cn, result_en in group.get("results") or parse_report_list(group.get("统计分析结果表清单", "")):
+            if result_en:
+                item = dict(group)
+                item["result_cn"] = result_cn
+                item["result_en"] = norm_table_name(result_en)
+                programs.append(item)
+    print(f"程序: {len(programs)} 个")
+
+    source_map, relation_map, detail_map, image_bytes = load_stats_design_usage_data(relation_path)
+    needed_names = {item["result_en"] for item in programs}
+    for result_en in list(needed_names):
+        for source in source_map.get(result_en, []):
+            source_name = norm_table_name(source.get("资源信息（表名）", ""))
+            if source_name:
+                needed_names.add(source_name)
+    resource_info = load_stats_design_catalog(catalog_path, needed_names)
+
+    doc = Document(template_path)
+    body = doc.element.body
+    design_h1 = find_heading_paragraph(doc, "Heading 1", "数据统计分析设计")
+    if design_h1 is None:
+        raise ValueError("模板中未找到「数据统计分析设计」章节")
+
+    source_heading = find_heading_paragraph(doc, "Heading 2", "需求来源")
+    if source_heading:
+        source_index = next(
+            (
+                idx for idx, paragraph in enumerate(doc.paragraphs)
+                if paragraph.style.name == "Heading 2" and "需求来源" in paragraph.text
+            ),
+            -1,
+        )
+        if source_index + 1 < len(doc.paragraphs):
+            desc = doc.paragraphs[source_index + 1]
+            unique_reqs = len({item.get("需求单号", "") for item in programs if item.get("需求单号", "")})
+            unique_orders = len({item.get("工单号", "") for item in programs if item.get("工单号", "")})
+            desc.text = f"服务周期内，共有{unique_reqs}张需求单，{unique_orders}张工单涉及{len(programs)}次数据统计分析服务。具体需求单、工单和产出如下表："
+        if len(doc.tables) >= 3:
+            tbl = doc.tables[2]._tbl
+            for tr in tbl.findall(qn("w:tr"))[1:]:
+                tbl.remove(tr)
+            tbl_pr = tbl.find(qn("w:tblPr"))
+            if tbl_pr is None:
+                tbl_pr = OxmlElement("w:tblPr")
+                tbl.insert(0, tbl_pr)
+            for border in tbl_pr.findall(qn("w:tblBorders")):
+                tbl_pr.remove(border)
+            add_solid_borders(tbl_pr)
+            for idx, item in enumerate(programs, start=1):
+                tr = OxmlElement("w:tr")
+                for value in [
+                    str(idx),
+                    item.get("需求单号", ""),
+                    item.get("工单号", ""),
+                    item.get("工单内容", ""),
+                    item["result_en"],
+                ]:
+                    tr.append(make_cell_oxml(xml_safe(value)))
+                tbl.append(tr)
+
+    remove_content_after_heading(body, design_h1)
+
+    style = {}
+    for local_name, style_name in [("H2", "Heading 2"), ("H3", "Heading 3"), ("H4", "Heading 4"), ("BT", "Body Text"), ("NL", "Normal")]:
+        try:
+            style[local_name] = doc.styles[style_name].style_id
+        except Exception:
+            style[local_name] = style_name
+
+    append_body_element(body, mp(
+        f"服务单服务周期内，形成了{len(programs)}个数据统计分析程序，各程序分析设计和融合加工的具体过程如下：",
+        style["NL"],
+    ))
+
+    for item in programs:
+        result_cn = item["result_cn"]
+        result_en = item["result_en"]
+        append_body_element(body, mp(xml_safe(result_cn), style["H2"]))
+
+        append_body_element(body, mp("涉及到的实体表", style["H3"]))
+        entity_rows = []
+        seq = 1
+        seen_sources = set()
+        for source in source_map.get(result_en, []):
+            table_name = source.get("资源信息（表名）", "")
+            key = norm_table_name(table_name)
+            if not key or key in seen_sources:
+                continue
+            seen_sources.add(key)
+            entity_rows.append(make_stats_design_entity_row(table_name, source, resource_info, "源表", seq))
+            seq += 1
+        entity_rows.append(make_stats_design_entity_row(result_en, None, resource_info, "目标表", seq))
+        append_body_element(body, make_table_oxml(
+            ["序号", "数据目录/编码（如有）", "数据目录中文名称（目录名）", "表名", "表类型", "数据更新周期"],
+            entity_rows,
+            ["550", "1600", "2600", "2800", "900", "1300"],
+        ))
+
+        append_body_element(body, mp("数据统计分析设计", style["H3"]))
+        append_body_element(body, mp(xml_safe(f"{result_cn} {result_en}"), style["H4"]))
+        fields = []
+        for field in detail_map.get(result_en, []):
+            fields.append([
+                field.get("字段中文名", ""),
+                field.get("字段英文名", ""),
+                field.get("字段类型", ""),
+                "不可为空",
+                "唯一",
+                field.get("字段注释", "") or "No",
+            ])
+        if not fields:
+            fields = [["未匹配到字段信息", "", "", "", "", "请补充"]]
+        append_body_element(body, make_table_oxml(
+            ["字段中文名", "字段英文名", "字段类型", "是否为空", "主键/外键", "字段说明"],
+            fields,
+            ["1700", "1800", "1500", "1100", "1100", "2800"],
+        ))
+
+        append_body_element(body, mp("数据处理流程图", style["H3"]))
+        img_id = image_id_from_formula(relation_map.get(result_en, {}).get("image_formula", ""))
+        append_image_paragraph(doc, body, image_bytes.get(img_id), "未匹配到数据处理流程图，请补充。")
+
+        append_body_element(body, mp("数据加工逻辑", style["H3"]))
+        steps = split_logic_description(relation_map.get(result_en, {}).get("description", ""))
+        if not steps:
+            steps = ["未匹配到数据加工逻辑说明，请手动补充。"]
+        append_body_element(body, make_biz_table(
+            "数据统计分析加工逻辑说明",
+            [(str(idx), step) for idx, step in enumerate(steps, start=1)],
+        ))
+
+    doc.save(output_path)
+    print(f"已保存: {output_path}")
+    update_toc_via_com(output_path)
+    return output_path
+
 # Dispatcher
 # ══════════════════════════════════════════════════════════════
 
@@ -1413,13 +1729,21 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         data_rows = read_stats_requirement_groups(excel_path, service_dir)
         relation_path = resolve_stats_relation_workbook(template_path, catalog_path)
         return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path)
+    elif material_type == "02-数据统计分析_设计文档":
+        if not catalog_path:
+            raise ValueError("02-数据统计分析_设计文档需要 --catalog 参数指定数据目录数据路径")
+        if not os.path.exists(catalog_path):
+            raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
+        data_rows = read_stats_requirement_groups(excel_path, service_dir)
+        relation_path = resolve_stats_relation_workbook(template_path)
+        return fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path)
     elif material_type == "04-数据统计分析_结果表及使用说明":
         return fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path)
     elif material_type == "03-数据报表_上线记录":
         data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 03-数据报表_上线记录, 04-数据统计分析_结果表及使用说明")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 04-数据统计分析_结果表及使用说明")
 
 
 # ══════════════════════════════════════════════════════════════
