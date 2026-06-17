@@ -720,7 +720,7 @@ def draw_arrow(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int
 
 def draw_flowchart_png(record: dict, output_path: Path) -> None:
     width, height = 1280, 1120
-    img = Image.new("RGB", (width, height), "black")
+    img = Image.new("RGBA", (width, height), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
     fp = font_path()
     font_node = ImageFont.truetype(fp, 24) if fp else ImageFont.load_default()
@@ -728,7 +728,6 @@ def draw_flowchart_png(record: dict, output_path: Path) -> None:
 
     start_box = (540, 35, 740, 100)
     result_box = (435, 510, 845, 680)
-    push_box = (445, 800, 835, 910)
     end_box = (540, 1010, 740, 1080)
     node_fill = "#F6D1AD"
     line_color = "#2B2B2B"
@@ -760,6 +759,13 @@ def draw_flowchart_png(record: dict, output_path: Path) -> None:
         if len(display_sources) == 5:
             boxes.append((500, 385, 780, 485))
 
+    max_source_bottom = max(box[3] for box in boxes)
+    routing_gap = 42
+    result_gap = 45
+    result_h = result_box[3] - result_box[1]
+    result_top = max(result_box[1], max_source_bottom + routing_gap + result_gap)
+    result_box = (result_box[0], result_top, result_box[2], result_top + result_h)
+
     for source, box in zip(display_sources, boxes):
         if source.startswith("其他"):
             label = f"提取处理表数据\n{source}"
@@ -780,7 +786,7 @@ def draw_flowchart_png(record: dict, output_path: Path) -> None:
         cx = box[0] + (box[2] - box[0]) // 2
         draw_arrow(draw, (cx, branch_y), (cx, box[1]))
 
-    merge_y = 455
+    merge_y = max_source_bottom + routing_gap
     for box in boxes:
         cx = box[0] + (box[2] - box[0]) // 2
         draw.line([(cx, box[3]), (cx, merge_y)], fill=line_color, width=4)
@@ -789,10 +795,9 @@ def draw_flowchart_png(record: dict, output_path: Path) -> None:
 
     result_text = f"统计融合为\n{record['result_cn']}\n{record['result_en']}"
     draw_node(draw, result_box, result_text, font_node, fill=node_fill, rounded=False)
-    draw_arrow(draw, ((result_box[0] + result_box[2]) // 2, result_box[3]), ((push_box[0] + push_box[2]) // 2, push_box[1]))
-    draw_node(draw, push_box, "推送至应用开发部", font_node, fill=node_fill, rounded=False)
-    draw_arrow(draw, ((push_box[0] + push_box[2]) // 2, push_box[3]), ((end_box[0] + end_box[2]) // 2, end_box[1]))
     draw_node(draw, end_box, "结束", font_node, fill=node_fill, rounded=True)
+
+    draw_arrow(draw, ((result_box[0] + result_box[2]) // 2, result_box[3]), ((end_box[0] + end_box[2]) // 2, end_box[1]))
 
     img.save(output_path)
 

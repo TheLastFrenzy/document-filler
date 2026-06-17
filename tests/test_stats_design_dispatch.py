@@ -6,10 +6,17 @@ from unittest import mock
 
 import openpyxl
 from docx import Document
+from openpyxl.drawing.image import Image as XLImage
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fill_document.py"
+PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
+    b"\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02"
+    b"\xfeA\xe2!Q\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def load_fill_document_module():
@@ -36,6 +43,14 @@ def make_split_ledger(path: Path):
     ws.append([None, None, None, None, "结果表三 RESULT_THREE"])
     for column in ["A", "B", "C", "D"]:
         ws.merge_cells(f"{column}2:{column}4")
+    wb.save(path)
+
+
+def make_single_fusion_ledger(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["服务目录", "需求单号", "工单号", "工单内容", "统计分析结果表清单"])
+    ws.append(["N08-数据统计分析", "REQ-1", "WO-1", "工单一", "结果表一 FUSION_RESULT_ONE"])
     wb.save(path)
 
 
@@ -82,6 +97,49 @@ def make_usage_workbook(path: Path):
     wb.save(path)
 
 
+def make_usage_workbook_with_standard_drawing(path: Path, image_path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "1、数据源表list"
+    ws.append(["资源名称", "资源编目（非必填）", "资源信息（表名）", "数据融合加工表"])
+    ws.append(["源表一", "DIR-SRC-1", "SRC_ONE", "RESULT_ONE"])
+
+    ws = wb.create_sheet("2、表融合关系")
+    ws["A1"] = "2.1 RESULT_ONE"
+    ws["B2"] = "文字描述"
+    ws["C2"] = "1\t数据来源准备：读取源表。\n2\t结果输出：写入结果表。"
+    ws["B3"] = "数据处理流程图"
+    ws.add_image(XLImage(str(image_path)), "C3")
+
+    ws = wb.create_sheet("4、数据统计分析结果表详情")
+    ws["A1"] = "4.1"
+    ws["B1"] = "RESULT_ONE"
+    ws.append(["", "字段中文名", "字段英文名", "字段类型", "默认", "不可为空", "唯一", "字段注释"])
+    ws.append(["", "字段一", "FIELD_ONE", "VARCHAR2(50)", "", "不可为空", "唯一", "字段说明"])
+    wb.save(path)
+
+
+def make_usage_workbook_with_nullable_unique_values(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "1、数据源表list"
+    ws.append(["资源名称", "资源编目（非必填）", "资源信息（表名）", "数据融合加工表"])
+    ws.append(["源表一", "DIR-SRC-1", "SRC_ONE", "FUSION_RESULT_ONE"])
+
+    ws = wb.create_sheet("2、表融合关系")
+    ws["A1"] = "2.1 FUSION_RESULT_ONE"
+    ws["B2"] = "文字描述"
+    ws["C2"] = "1\t数据来源准备：读取源表。\n2\t结果输出：写入结果表。"
+
+    ws = wb.create_sheet("4、数据统计分析结果表详情")
+    ws["A1"] = "4.1"
+    ws["B1"] = "FUSION_RESULT_ONE"
+    ws.append(["", "字段中文名", "字段英文名", "字段类型", "默认", "是否为空", "唯一", "字段注释"])
+    ws.append(["", "字段一", "FIELD_REQUIRED", "VARCHAR2(50)", "", "否", "是", "字段一说明"])
+    ws.append(["", "字段二", "FIELD_OPTIONAL", "NUMBER(10)", "", "是", "否", "字段二说明"])
+    wb.save(path)
+
+
 def make_catalog(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -92,6 +150,7 @@ def make_catalog(path: Path):
     ws.append(["RESULT_ONE", "CAT-R1", "结果表一", "每日"])
     ws.append(["RESULT_TWO", "CAT-R2", "结果表二", "每日"])
     ws.append(["RESULT_THREE", "CAT-R3", "结果表三", "每日"])
+    ws.append(["FUSION_RESULT_ONE", "CAT-FR1", "结果表一", "每日"])
     wb.save(path)
 
 
@@ -158,6 +217,48 @@ class StatsDesignDispatchTest(unittest.TestCase):
                 [("结果表一", "RESULT_ONE"), ("结果表二", "RESULT_TWO"), ("结果表三", "RESULT_THREE")],
             )
 
+    def test_stats_design_prefers_generated_relation_workbook_next_to_output(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template_dir = temp / "template"
+            output_dir = temp / "output"
+            template_dir.mkdir()
+            output_dir.mkdir()
+            ledger = temp / "ledger.xlsx"
+            template = template_dir / "02-数据统计分析_设计文档.docx"
+            stale_relation = template_dir / "04-数据统计分析_结果表及使用说明.xlsx"
+            fresh_relation = output_dir / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = output_dir / "02-数据统计分析_设计文档.docx"
+            make_split_ledger(ledger)
+            template.write_bytes(b"placeholder")
+            openpyxl.Workbook().save(catalog)
+            relation_wb = openpyxl.Workbook()
+            relation_wb.active.title = "2、表融合关系"
+            relation_wb.save(stale_relation)
+            relation_wb.save(fresh_relation)
+
+            calls = []
+
+            def fake_fill(excel_path, data_rows, template_path, output_path, catalog_path, relation_path=None):
+                calls.append((excel_path, data_rows, template_path, output_path, catalog_path, relation_path))
+                Path(output_path).write_bytes(b"generated-docx")
+                return output_path
+
+            with mock.patch.object(module, "fill_stats_design_doc", fake_fill, create=True):
+                result = module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            self.assertEqual(result, str(output))
+            self.assertEqual(calls[0][5], str(fresh_relation))
+
     def test_generates_stats_design_word_for_each_split_program(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -194,6 +295,58 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertNotIn("旧内容", full_text)
             self.assertEqual(len([p for p in doc.paragraphs if p.style.name == "Heading 2" and p.text.startswith("结果表")]), 3)
             self.assertGreaterEqual(len(doc.tables), 10)
+
+    def test_stats_design_result_structure_uses_nullable_and_unique_values_from_usage_workbook(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "02-数据统计分析_设计文档.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_single_fusion_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook_with_nullable_unique_values(relation)
+            make_catalog(catalog)
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            doc = Document(output)
+            table_rows = [
+                [cell.text for cell in row.cells]
+                for table in doc.tables
+                for row in table.rows
+            ]
+            required = next(row for row in table_rows if any("FIELD_REQUIRED" in cell for cell in row))
+            optional = next(row for row in table_rows if any("FIELD_OPTIONAL" in cell for cell in row))
+
+            self.assertEqual(required[3], "否")
+            self.assertEqual(required[4], "是")
+            self.assertEqual(optional[3], "是")
+            self.assertEqual(optional[4], "否")
+
+    def test_loads_stats_design_flowchart_from_standard_excel_drawing(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            image = temp / "flowchart.png"
+            image.write_bytes(PNG_1X1)
+            make_usage_workbook_with_standard_drawing(relation, image)
+
+            _source_map, relation_map, _detail_map, _image_bytes = module.load_stats_design_usage_data(str(relation))
+
+            self.assertIn("RESULT_ONE", relation_map)
+            self.assertGreater(len(relation_map["RESULT_ONE"].get("image_bytes", b"")), 0)
 
 
 if __name__ == "__main__":

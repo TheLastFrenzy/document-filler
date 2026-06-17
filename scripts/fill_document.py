@@ -398,10 +398,12 @@ def read_stats_requirement_groups(excel_path, service_dir):
     return groups
 
 
-def resolve_stats_relation_workbook(template_path, relation_hint=None):
+def resolve_stats_relation_workbook(template_path, relation_hint=None, output_path=None):
     candidates = []
     if relation_hint:
         candidates.append(Path(relation_hint))
+    if output_path:
+        candidates.append(Path(output_path).with_name("04-数据统计分析_结果表及使用说明.xlsx"))
     template = Path(template_path)
     candidates.append(template.with_name("04-数据统计分析_结果表及使用说明.xlsx"))
     candidates.append(template.parent / "04-数据统计分析_结果表及使用说明.xlsx")
@@ -1386,10 +1388,34 @@ def image_id_from_formula(formula_text):
     return match.group(1) if match else ""
 
 
+def extract_openpyxl_images_by_cell(xlsx_path, sheet_name):
+    """Return standard Excel drawing images keyed by 1-based (row, col)."""
+    wb = None
+    try:
+        wb = openpyxl.load_workbook(xlsx_path, data_only=False)
+        if sheet_name not in wb.sheetnames:
+            return {}
+        ws = wb[sheet_name]
+        images = {}
+        for image in getattr(ws, "_images", []):
+            marker = getattr(getattr(image, "anchor", None), "_from", None)
+            if marker is None:
+                continue
+            try:
+                images[(marker.row + 1, marker.col + 1)] = image._data()
+            except Exception:
+                continue
+        return images
+    finally:
+        if wb is not None:
+            wb.close()
+
+
 def load_stats_design_usage_data(relation_path):
     if not relation_path:
         raise ValueError("02-数据统计分析_设计文档需要模板同目录的 04-数据统计分析_结果表及使用说明.xlsx")
 
+    relation_images = extract_openpyxl_images_by_cell(relation_path, "2、表融合关系")
     wb = openpyxl.load_workbook(relation_path, data_only=False)
     source_map = {}
     if "1、数据源表list" in wb.sheetnames:
@@ -1417,7 +1443,10 @@ def load_stats_design_usage_data(relation_path):
                     relation_map.setdefault(current, {})["description"] = str(ws.cell(row, col + 1).value or "").strip()
                     break
                 if label == "数据处理流程图" and current:
-                    relation_map.setdefault(current, {})["image_formula"] = str(ws.cell(row, col + 1).value or "").strip()
+                    entry = relation_map.setdefault(current, {})
+                    entry["image_formula"] = str(ws.cell(row, col + 1).value or "").strip()
+                    if (row, col + 1) in relation_images:
+                        entry["image_bytes"] = relation_images[(row, col + 1)]
                     break
 
     detail_map = {}
@@ -1533,6 +1562,14 @@ def append_image_paragraph(doc, body, image_bytes, missing_text):
     else:
         paragraph.text = missing_text
     return paragraph
+
+
+def first_non_empty(mapping, keys, default=""):
+    for key in keys:
+        value = str(mapping.get(key, "") or "").strip()
+        if value:
+            return value
+    return default
 
 
 def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path=None):
@@ -1655,8 +1692,8 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
                 field.get("字段中文名", ""),
                 field.get("字段英文名", ""),
                 field.get("字段类型", ""),
-                "不可为空",
-                "唯一",
+                first_non_empty(field, ["是否为空", "不可为空"]),
+                first_non_empty(field, ["主键/外键", "唯一"]),
                 field.get("字段注释", "") or "No",
             ])
         if not fields:
@@ -1668,8 +1705,12 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
         ))
 
         append_body_element(body, mp("数据处理流程图", style["H3"]))
-        img_id = image_id_from_formula(relation_map.get(result_en, {}).get("image_formula", ""))
-        append_image_paragraph(doc, body, image_bytes.get(img_id), "未匹配到数据处理流程图，请补充。")
+        relation_data = relation_map.get(result_en, {})
+        image_payload = relation_data.get("image_bytes")
+        if not image_payload:
+            img_id = image_id_from_formula(relation_data.get("image_formula", ""))
+            image_payload = image_bytes.get(img_id)
+        append_image_paragraph(doc, body, image_payload, "未匹配到数据处理流程图，请补充。")
 
         append_body_element(body, mp("数据加工逻辑", style["H3"]))
         steps = split_logic_description(relation_map.get(result_en, {}).get("description", ""))
@@ -1755,7 +1796,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         if not os.path.exists(catalog_path):
             raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
         data_rows = read_stats_requirement_groups(excel_path, service_dir)
-        relation_path = resolve_stats_relation_workbook(template_path)
+        relation_path = resolve_stats_relation_workbook(template_path, output_path=output_path)
         return fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path)
     elif material_type == "04-数据统计分析_结果表及使用说明":
         return fill_stats_result_usage_workbook(excel_path, service_dir, template_path, output_path, catalog_path)
