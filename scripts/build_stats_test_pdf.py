@@ -19,6 +19,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
+import fitz
 import olefile
 import openpyxl
 from PIL import Image as PILImage
@@ -490,6 +491,21 @@ def make_styles(regular_font: str, bold_font: str):
     }
 
 
+class HeadingTrackingDocTemplate(SimpleDocTemplate):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.heading_pages: dict[str, int] = {}
+
+    def afterFlowable(self, flowable):
+        if not isinstance(flowable, Paragraph):
+            return
+        if flowable.style.name not in {"h1", "h2"}:
+            return
+        heading = flowable.getPlainText()
+        if heading and heading not in self.heading_pages:
+            self.heading_pages[heading] = self.page - 1
+
+
 def p(text_value: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(escape(text_value), style)
 
@@ -607,7 +623,7 @@ def add_conclusion(story: list, styles, materials: list[ProgramMaterial], regula
 def build_pdf(output_path: str | os.PathLike, materials: list[ProgramMaterial], groups: dict[str, list[Program]], service_dir: str):
     regular_font, bold_font = register_fonts()
     styles = make_styles(regular_font, bold_font)
-    doc = SimpleDocTemplate(
+    doc = HeadingTrackingDocTemplate(
         str(output_path),
         pagesize=A4,
         leftMargin=20 * mm,
@@ -623,6 +639,211 @@ def build_pdf(output_path: str | os.PathLike, materials: list[ProgramMaterial], 
     add_test_content(story, styles, materials, doc.width, service_dir)
     add_conclusion(story, styles, materials, regular_font)
     doc.build(story, canvasmaker=lambda *args, **kwargs: NumberedCanvas(*args, normal_font=regular_font, **kwargs))
+    return doc.heading_pages
+
+
+@dataclass
+class TocEntry:
+    number: str
+    title: str
+    level: int
+    page: int
+
+
+def page_contains(page, needle: str) -> bool:
+    text_value = page.get_text("text")
+    return needle in text_value
+
+
+def find_heading_page(doc, heading: str, start: int = 0, default: int | None = None) -> int:
+    for index in range(start, doc.page_count):
+        if page_contains(doc[index], heading):
+            return index
+    if default is not None:
+        return default
+    raise ValueError(f"生成内容中未找到标题: {heading}")
+
+
+def content_target_page(content_index: int, content_start: int, prefix_count: int) -> int:
+    return prefix_count + (content_index - content_start) + 1
+
+
+def get_heading_index(heading_pages: dict[str, int], content_doc, heading: str, content_start: int, default: int) -> int:
+    if heading in heading_pages:
+        return heading_pages[heading]
+    return find_heading_page(content_doc, heading, start=content_start, default=default)
+
+
+def build_toc_entries(materials: list[ProgramMaterial], content_doc, heading_pages: dict[str, int], content_start: int, toc_page_count: int) -> tuple[list[TocEntry], dict]:
+    prefix_count = 2 + toc_page_count + 3
+    static_page_start = 2 + toc_page_count + 1
+    static_page_second = static_page_start + 1
+    static_page_third = static_page_start + 2
+    content_first_page = content_target_page(content_start, content_start, prefix_count)
+    program_pages = {}
+    for index, item in enumerate(materials, start=1):
+        heading = f"5.{index}. {item.program.result_cn}"
+        program_index = get_heading_index(heading_pages, content_doc, heading, content_start, content_start)
+        program_pages[item.program.result_en] = content_target_page(program_index, content_start, prefix_count)
+    conclusion_index = get_heading_index(heading_pages, content_doc, "6. 测试结论", content_start, content_doc.page_count - 1)
+    conclusion_page = content_target_page(conclusion_index, content_start, prefix_count)
+    entries = [
+        TocEntry("1.", "文档说明", 0, static_page_start),
+        TocEntry("2.", "项目背景", 0, static_page_start),
+        TocEntry("2.1.", "测试范围", 1, static_page_start),
+        TocEntry("2.2.", "测试目的", 1, static_page_start),
+        TocEntry("2.3.", "参考文档", 1, static_page_start),
+        TocEntry("3.", "测试环境与配置", 0, static_page_second),
+        TocEntry("3.1.", "测试环境与配置", 1, static_page_second),
+        TocEntry("3.2.", "测试方法和工具", 1, static_page_second),
+        TocEntry("4.", "测试标准", 0, static_page_second),
+        TocEntry("4.1.", "数据测试", 1, static_page_second),
+        TocEntry("4.2.", "程序测试", 1, static_page_third),
+        TocEntry("5.", "测试内容", 0, content_first_page),
+    ]
+    entries.extend(
+        TocEntry(f"5.{index}.", item.program.result_cn, 1, program_pages[item.program.result_en])
+        for index, item in enumerate(materials, start=1)
+    )
+    entries.append(TocEntry("6.", "测试结论", 0, conclusion_page))
+    return entries, {"program_pages": program_pages, "conclusion_page": conclusion_page}
+
+
+def draw_reportlab_header_footer(c: canvas.Canvas, page_no: int, total_pages: int, normal_font: str):
+    width, height = A4
+    c.setFont(normal_font, 9)
+    c.setFillColor(colors.black)
+    c.drawRightString(width - 20 * mm, height - 13 * mm, "测试文档")
+    c.setStrokeColor(colors.HexColor("#777777"))
+    c.setLineWidth(0.4)
+    c.line(20 * mm, height - 16 * mm, width - 20 * mm, height - 16 * mm)
+    c.drawRightString(width - 20 * mm, 13 * mm, f"第 {page_no} 页  共 {total_pages} 页")
+
+
+def render_toc_pdf(toc_path: Path, entries: list[TocEntry], total_pages: int, regular_font: str, bold_font: str, min_pages: int = 2):
+    width, height = A4
+    c = canvas.Canvas(str(toc_path), pagesize=A4)
+    left_x = 80
+    indent_x = 18
+    right_x = width - 88
+    line_height = 22
+    font_size = 10.5
+    bottom_top_y = height - 70
+    page_starts = [148, 92]
+    links: list[tuple[int, fitz.Rect, int]] = []
+    entry_index = 0
+    toc_page = 0
+    while entry_index < len(entries) or toc_page < min_pages:
+        final_page_no = 2 + toc_page + 1
+        draw_reportlab_header_footer(c, final_page_no, total_pages, regular_font)
+        if toc_page == 0:
+            c.setFont(bold_font, 16)
+            c.drawCentredString(width / 2, height - 78, "目  录")
+        start_top_y = page_starts[toc_page] if toc_page < len(page_starts) else 92
+        y_top = start_top_y
+        while entry_index < len(entries) and y_top <= bottom_top_y:
+            entry = entries[entry_index]
+            x = left_x + (indent_x if entry.level else 0)
+            draw_y = height - y_top
+            display_text = f"{entry.number} {entry.title}"
+            c.setFont(regular_font, font_size)
+            c.drawString(x, draw_y, display_text)
+            c.drawRightString(right_x, draw_y, str(entry.page))
+            links.append((toc_page, fitz.Rect(x, y_top - 13, right_x + 8, y_top + 4), entry.page - 1))
+            entry_index += 1
+            y_top += line_height
+        c.showPage()
+        toc_page += 1
+    c.save()
+    return links, toc_page
+
+
+def text_width(text_value: str, font_size: float = 9) -> float:
+    try:
+        return fitz.get_text_length(text_value, fontname="china-s", fontsize=font_size)
+    except Exception:
+        return len(text_value) * font_size
+
+
+def insert_right_text(page, text_value: str, y: float, right_margin: float = 20 * mm, font_size: float = 9):
+    x = page.rect.width - right_margin - text_width(text_value, font_size)
+    page.insert_text((x, y), text_value, fontname="china-s", fontsize=font_size, color=(0, 0, 0), overlay=True)
+
+
+def draw_fitz_header_footer(page, page_no: int, total_pages: int, patch_header: bool):
+    width = page.rect.width
+    height = page.rect.height
+    page_text = f"第 {page_no} 页  共 {total_pages} 页"
+    if patch_header:
+        page.draw_rect(fitz.Rect(0, 0, width, 22 * mm), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+        insert_right_text(page, "测试文档", 13 * mm)
+        page.draw_line((20 * mm, 16 * mm), (width - 20 * mm, 16 * mm), color=(0.47, 0.47, 0.47), width=0.4, overlay=True)
+    page.draw_rect(fitz.Rect(width - 190, height - 105, width - 20, height - 12), color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+    insert_right_text(page, page_text, height - 13 * mm)
+
+
+def patch_template_footer(page, page_no: int, total_pages: int):
+    draw_fitz_header_footer(page, page_no, total_pages, patch_header=False)
+
+
+def patch_generated_header_footer(page, page_no: int, total_pages: int):
+    draw_fitz_header_footer(page, page_no, total_pages, patch_header=True)
+
+
+def assemble_template_preserved_pdf(template_path: str | os.PathLike, content_path: Path, heading_pages: dict[str, int], materials: list[ProgramMaterial], output_path: str | os.PathLike):
+    regular_font, bold_font = register_fonts()
+    template_doc = fitz.open(str(template_path))
+    content_doc = fitz.open(str(content_path))
+    if template_doc.page_count < 21:
+        template_doc.close()
+        content_doc.close()
+        raise ValueError("03-数据统计分析_测试文档模板至少需要包含 21 页，以保留封面、修订记录和 1-4 章静态内容。")
+
+    if "5. 测试内容" in heading_pages:
+        content_start = heading_pages["5. 测试内容"]
+    else:
+        content_start = find_heading_page(content_doc, "5. 测试内容", start=0, default=6 if content_doc.page_count > 6 else 0)
+    toc_page_count = 2
+    prefix_count = 2 + toc_page_count + 3
+    generated_page_count = content_doc.page_count - content_start
+    total_pages = prefix_count + generated_page_count
+    entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count)
+
+    with tempfile.TemporaryDirectory(prefix="document_filler_toc_") as toc_temp:
+        toc_path = Path(toc_temp) / "toc.pdf"
+        links, actual_toc_pages = render_toc_pdf(toc_path, entries, total_pages, regular_font, bold_font, min_pages=toc_page_count)
+        if actual_toc_pages != toc_page_count:
+            toc_page_count = actual_toc_pages
+            prefix_count = 2 + toc_page_count + 3
+            total_pages = prefix_count + generated_page_count
+            entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count)
+            links, actual_toc_pages = render_toc_pdf(toc_path, entries, total_pages, regular_font, bold_font, min_pages=toc_page_count)
+
+        toc_doc = fitz.open(str(toc_path))
+        final_doc = fitz.open()
+        final_doc.insert_pdf(template_doc, from_page=0, to_page=1)
+        final_doc.insert_pdf(toc_doc)
+        final_doc.insert_pdf(template_doc, from_page=18, to_page=20)
+        final_doc.insert_pdf(content_doc, from_page=content_start, to_page=content_doc.page_count - 1)
+
+        preserved_indices = list(range(0, 2)) + list(range(2 + actual_toc_pages, 2 + actual_toc_pages + 3))
+        for page_index in preserved_indices:
+            patch_template_footer(final_doc[page_index], page_index + 1, final_doc.page_count)
+        for page_index in range(2 + actual_toc_pages + 3, final_doc.page_count):
+            patch_generated_header_footer(final_doc[page_index], page_index + 1, final_doc.page_count)
+        for toc_page_index, rect, target_page in links:
+            if target_page < final_doc.page_count:
+                final_doc[2 + toc_page_index].insert_link({"kind": fitz.LINK_GOTO, "from": rect, "page": target_page})
+
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.exists():
+            output.unlink()
+        final_doc.save(str(output), garbage=4, deflate=True)
+        final_doc.close()
+        toc_doc.close()
+    template_doc.close()
+    content_doc.close()
 
 
 def build_stats_test_pdf(ledger_path: str, service_dir: str, template_path: str, output_path: str):
@@ -638,7 +859,9 @@ def build_stats_test_pdf(ledger_path: str, service_dir: str, template_path: str,
         for order, report in list(reports.items()):
             reports[order] = parse_report_images(report, work_dir)
         materials, summary = build_materials(programs, reports)
-        build_pdf(output_path, materials, groups, service_dir)
+        content_path = work_dir / "generated_content.pdf"
+        heading_pages = build_pdf(content_path, materials, groups, service_dir)
+        assemble_template_preserved_pdf(template_path, content_path, heading_pages, materials, output_path)
     print(json.dumps(summary, ensure_ascii=False))
     print(f"已保存: {output_path}")
     return output_path

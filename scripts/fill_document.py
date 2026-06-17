@@ -1713,6 +1713,7 @@ def fill_stats_result_usage_workbook(excel_path, service_dir, template_path, out
 def fill_stats_test_pdf(excel_path, service_dir, template_path, output_path):
     """Fill 03-数据统计分析_测试文档 PDF."""
     ensure_module("PIL", "pillow")
+    ensure_module("fitz", "pymupdf")
     ensure_module("reportlab")
     builder_path = os.path.join(os.path.dirname(__file__), "build_stats_test_pdf.py")
     spec = importlib.util.spec_from_file_location("build_stats_test_pdf", builder_path)
