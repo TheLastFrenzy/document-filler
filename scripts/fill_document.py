@@ -21,10 +21,12 @@ if sys.platform == "win32":
 
 # ── Dependencies ──
 def ensure_module(name, pip_name=None):
-    try:
-        __import__(name)
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name or name, "-q"])
+    package_name = pip_name or name
+    if importlib.util.find_spec(name) is None:
+        raise ImportError(
+            f"缺少 Python 依赖: {package_name}。请先在 document-filler 目录运行: "
+            f"{sys.executable} -m pip install -r requirements.txt"
+        )
 
 ensure_module("openpyxl")
 ensure_module("docx", "python-docx")
@@ -38,6 +40,24 @@ from docx.oxml import OxmlElement
 import struct
 
 HEADER_BG = "F1F1F1"
+
+MATERIAL_OUTPUT_EXTENSIONS = {
+    "01-数据报表_需求文档": ".docx",
+    "01-数据统计分析_需求文档": ".docx",
+    "02-数据报表_设计文档": ".docx",
+    "02-数据统计分析_设计文档": ".docx",
+    "03-数据报表_上线记录": ".docx",
+    "03-数据统计分析_测试文档": ".pdf",
+    "04-数据统计分析_结果表及使用说明": ".xlsx",
+}
+
+
+def resolve_output_path(output_path, material_type):
+    output = Path(output_path)
+    if output.exists() and output.is_dir():
+        extension = MATERIAL_OUTPUT_EXTENSIONS.get(material_type, "")
+        return str(output / f"{material_type}{extension}")
+    return str(output)
 
 # ══════════════════════════════════════════════════════════════
 # Shared Helpers
@@ -1772,6 +1792,7 @@ def fill_stats_test_pdf(excel_path, service_dir, template_path, output_path):
 
 
 def fill_document(excel_path, service_dir, material_type, template_path, output_path, catalog_path=None):
+    output_path = resolve_output_path(output_path, material_type)
     print(f"台账清单: {excel_path}")
     print(f"筛选条件: 服务目录={service_dir}")
     print(f"材料类型: {material_type}")
@@ -1788,7 +1809,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         return fill_design_doc_full(excel_path, data_rows, template_path, output_path, catalog_path)
     elif material_type == "01-数据统计分析_需求文档":
         data_rows = read_stats_requirement_groups(excel_path, service_dir)
-        relation_path = resolve_stats_relation_workbook(template_path, catalog_path)
+        relation_path = resolve_stats_relation_workbook(template_path, catalog_path, output_path=output_path)
         return fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path)
     elif material_type == "02-数据统计分析_设计文档":
         if not catalog_path:

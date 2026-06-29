@@ -157,6 +157,43 @@ class StatsRequirementSplitRowsTest(unittest.TestCase):
             self.assertEqual(len(calls[0][1][0]["results"]), 3)
             self.assertEqual(calls[0][4], str(relation))
 
+    def test_dispatch_prefers_generated_relation_workbook_next_to_output(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template_dir = temp / "template"
+            output_dir = temp / "output"
+            template_dir.mkdir()
+            output_dir.mkdir()
+            ledger = temp / "ledger.xlsx"
+            template = template_dir / "01-数据统计分析_需求文档.docx"
+            stale_relation = template_dir / "04-数据统计分析_结果表及使用说明.xlsx"
+            fresh_relation = output_dir / "04-数据统计分析_结果表及使用说明.xlsx"
+            output = output_dir / "01-数据统计分析_需求文档.docx"
+            make_split_ledger(ledger)
+            make_relation_workbook(stale_relation)
+            make_relation_workbook(fresh_relation)
+            template.write_bytes(b"placeholder")
+
+            calls = []
+
+            def fake_fill(excel_path, data_rows, template_path, output_path, relation_path=None):
+                calls.append((excel_path, data_rows, template_path, output_path, relation_path))
+                Path(output_path).write_bytes(b"generated")
+                return output_path
+
+            with mock.patch.object(module, "fill_stats_requirement_doc", fake_fill):
+                result = module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="01-数据统计分析_需求文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                )
+
+            self.assertEqual(result, str(output))
+            self.assertEqual(calls[0][4], str(fresh_relation))
+
 
 if __name__ == "__main__":
     unittest.main()

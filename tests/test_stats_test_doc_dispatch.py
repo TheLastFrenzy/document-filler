@@ -1,12 +1,17 @@
 import importlib.util
+import importlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import fitz
 import openpyxl
-from pypdf import PdfReader
+
+fitz = importlib.import_module("fitz") if importlib.util.find_spec("fitz") else None
+if importlib.util.find_spec("pypdf"):
+    PdfReader = importlib.import_module("pypdf").PdfReader
+else:
+    PdfReader = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +41,13 @@ def make_template_pdf(path: Path):
         page.insert_text((72, 72), f"TEMPLATE_PAGE_{index + 1}", fontsize=12)
     doc[0].insert_text((72, 110), "TEMPLATE_COVER_MARKER", fontsize=12)
     doc[1].insert_text((72, 110), "TEMPLATE_REVISION_MARKER", fontsize=12)
-    doc[18].insert_text((72, 110), "TEMPLATE_STATIC_CHAPTER_MARKER", fontsize=12)
+    doc[4].insert_text((72, 110), "1. 文档说明", fontname="china-s", fontsize=12)
+    doc[4].insert_text((72, 130), "TEMPLATE_STATIC_CHAPTER_MARKER", fontsize=12)
+    doc[5].insert_text((72, 110), "3. 测试环境与配置", fontname="china-s", fontsize=12)
+    doc[6].insert_text((72, 110), "4. 测试标准", fontname="china-s", fontsize=12)
+    doc[7].insert_text((72, 110), "5. 测试内容", fontname="china-s", fontsize=12)
+    doc[18].insert_text((72, 110), "5.5. 专题分析_应急处理_应急工单分类_小时", fontname="china-s", fontsize=12)
+    doc[18].insert_text((72, 130), "OLD_SECTION_SHOULD_NOT_COPY", fontsize=12)
     doc.save(path)
     doc.close()
 
@@ -73,6 +84,8 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"%PDF-1.4\n% generated\n")
 
     def test_generates_pdf_with_original_conclusion_totals(self):
+        if fitz is None or PdfReader is None:
+            self.skipTest("requires PDF test dependencies: pymupdf and pypdf")
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -104,6 +117,9 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             self.assertIn("TEMPLATE_COVER_MARKER", pdf.pages[0].extract_text())
             self.assertIn("TEMPLATE_REVISION_MARKER", pdf.pages[1].extract_text())
             self.assertIn("TEMPLATE_STATIC_CHAPTER_MARKER", pdf.pages[4].extract_text())
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            self.assertNotIn("专题分析_应急处理_应急工单分类_小时", full_text)
+            self.assertNotIn("OLD_SECTION_SHOULD_NOT_COPY", full_text)
             last_text = pdf.pages[-1].extract_text()
             self.assertGreaterEqual(last_text.count("2"), 4)
             self.assertIn("100%", last_text)

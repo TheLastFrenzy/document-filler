@@ -650,6 +650,92 @@ class TocEntry:
     page: int
 
 
+STATIC_TOC_ENTRIES = [
+    ("1.", "文档说明", 0, 0),
+    ("2.", "项目背景", 0, 0),
+    ("2.1.", "测试范围", 1, 0),
+    ("2.2.", "测试目的", 1, 0),
+    ("2.3.", "参考文档", 1, 0),
+    ("3.", "测试环境与配置", 0, 1),
+    ("3.1.", "测试环境与配置", 1, 1),
+    ("3.2.", "测试方法和工具", 1, 1),
+    ("4.", "测试标准", 0, 1),
+    ("4.1.", "数据测试", 1, 1),
+    ("4.2.", "程序测试", 1, 2),
+]
+
+
+def compact_text(text_value: str) -> str:
+    return re.sub(r"\s+", "", text_value or "")
+
+
+def has_compact_heading(text_value: str, heading: str) -> bool:
+    return compact_text(heading) in compact_text(text_value)
+
+
+def is_toc_page_text(text_value: str) -> bool:
+    return "目录" in compact_text(text_value)
+
+
+def has_section5_program_heading(text_value: str) -> bool:
+    return re.search(r"(?m)(?:^|\n)\s*5\s*[.．]\s*\d+\s*[.．]", text_value or "") is not None
+
+
+def find_template_static_chapter_range(template_doc) -> tuple[int, int]:
+    """Find template pages containing chapters 1-4, excluding old chapter 5 content."""
+    if template_doc.page_count < 3:
+        raise ValueError("03-数据统计分析_测试文档模板至少需要包含封面、修订记录和 1-4 章静态内容。")
+
+    start_index = None
+    for index in range(2, template_doc.page_count):
+        page_text_value = template_doc[index].get_text("text")
+        if is_toc_page_text(page_text_value):
+            continue
+        if has_compact_heading(page_text_value, "1. 文档说明"):
+            start_index = index
+            break
+    if start_index is None:
+        raise ValueError("03-数据统计分析_测试文档模板未找到 1. 文档说明 静态章节页。")
+
+    end_exclusive = None
+    for index in range(start_index + 1, template_doc.page_count):
+        page_text_value = template_doc[index].get_text("text")
+        if has_compact_heading(page_text_value, "5. 测试内容"):
+            end_exclusive = index
+            break
+    if end_exclusive is None:
+        for index in range(start_index + 1, template_doc.page_count):
+            if has_section5_program_heading(template_doc[index].get_text("text")):
+                end_exclusive = index
+                break
+    if end_exclusive is None:
+        raise ValueError("03-数据统计分析_测试文档模板未找到 5. 测试内容 起始页，无法确定 1-4 章静态页范围。")
+    if end_exclusive <= start_index:
+        raise ValueError("03-数据统计分析_测试文档模板 1-4 章静态页范围异常。")
+    return start_index, end_exclusive - 1
+
+
+def static_page_for_offset(toc_page_count: int, static_page_count: int, offset: int) -> int:
+    clamped_offset = min(offset, max(static_page_count - 1, 0))
+    return 2 + toc_page_count + clamped_offset + 1
+
+
+def build_static_entry_pages(template_doc, static_start: int, static_end: int, toc_page_count: int) -> dict[str, int]:
+    static_page_count = static_end - static_start + 1
+    pages: dict[str, int] = {}
+    for page_index in range(static_start, static_end + 1):
+        page_no = 2 + toc_page_count + (page_index - static_start) + 1
+        page_text_value = template_doc[page_index].get_text("text")
+        for number, title, _, _ in STATIC_TOC_ENTRIES:
+            key = f"{number} {title}"
+            if key not in pages and has_compact_heading(page_text_value, key):
+                pages[key] = page_no
+    for number, title, _, fallback_offset in STATIC_TOC_ENTRIES:
+        key = f"{number} {title}"
+        pages.setdefault(key, static_page_for_offset(toc_page_count, static_page_count, fallback_offset))
+    return pages
+
+
 def page_contains(page, needle: str) -> bool:
     text_value = page.get_text("text")
     return needle in text_value
@@ -674,11 +760,16 @@ def get_heading_index(heading_pages: dict[str, int], content_doc, heading: str, 
     return find_heading_page(content_doc, heading, start=content_start, default=default)
 
 
-def build_toc_entries(materials: list[ProgramMaterial], content_doc, heading_pages: dict[str, int], content_start: int, toc_page_count: int) -> tuple[list[TocEntry], dict]:
-    prefix_count = 2 + toc_page_count + 3
-    static_page_start = 2 + toc_page_count + 1
-    static_page_second = static_page_start + 1
-    static_page_third = static_page_start + 2
+def build_toc_entries(
+    materials: list[ProgramMaterial],
+    content_doc,
+    heading_pages: dict[str, int],
+    content_start: int,
+    toc_page_count: int,
+    static_page_count: int = 3,
+    static_entry_pages: dict[str, int] | None = None,
+) -> tuple[list[TocEntry], dict]:
+    prefix_count = 2 + toc_page_count + static_page_count
     content_first_page = content_target_page(content_start, content_start, prefix_count)
     program_pages = {}
     for index, item in enumerate(materials, start=1):
@@ -687,20 +778,13 @@ def build_toc_entries(materials: list[ProgramMaterial], content_doc, heading_pag
         program_pages[item.program.result_en] = content_target_page(program_index, content_start, prefix_count)
     conclusion_index = get_heading_index(heading_pages, content_doc, "6. 测试结论", content_start, content_doc.page_count - 1)
     conclusion_page = content_target_page(conclusion_index, content_start, prefix_count)
-    entries = [
-        TocEntry("1.", "文档说明", 0, static_page_start),
-        TocEntry("2.", "项目背景", 0, static_page_start),
-        TocEntry("2.1.", "测试范围", 1, static_page_start),
-        TocEntry("2.2.", "测试目的", 1, static_page_start),
-        TocEntry("2.3.", "参考文档", 1, static_page_start),
-        TocEntry("3.", "测试环境与配置", 0, static_page_second),
-        TocEntry("3.1.", "测试环境与配置", 1, static_page_second),
-        TocEntry("3.2.", "测试方法和工具", 1, static_page_second),
-        TocEntry("4.", "测试标准", 0, static_page_second),
-        TocEntry("4.1.", "数据测试", 1, static_page_second),
-        TocEntry("4.2.", "程序测试", 1, static_page_third),
-        TocEntry("5.", "测试内容", 0, content_first_page),
-    ]
+    static_entry_pages = static_entry_pages or {}
+    entries = []
+    for number, title, level, fallback_offset in STATIC_TOC_ENTRIES:
+        key = f"{number} {title}"
+        page_no = static_entry_pages.get(key, static_page_for_offset(toc_page_count, static_page_count, fallback_offset))
+        entries.append(TocEntry(number, title, level, page_no))
+    entries.append(TocEntry("5.", "测试内容", 0, content_first_page))
     entries.extend(
         TocEntry(f"5.{index}.", item.program.result_cn, 1, program_pages[item.program.result_en])
         for index, item in enumerate(materials, start=1)
@@ -794,42 +878,46 @@ def assemble_template_preserved_pdf(template_path: str | os.PathLike, content_pa
     regular_font, bold_font = register_fonts()
     template_doc = fitz.open(str(template_path))
     content_doc = fitz.open(str(content_path))
-    if template_doc.page_count < 21:
+    if template_doc.page_count < 3:
         template_doc.close()
         content_doc.close()
-        raise ValueError("03-数据统计分析_测试文档模板至少需要包含 21 页，以保留封面、修订记录和 1-4 章静态内容。")
+        raise ValueError("03-数据统计分析_测试文档模板至少需要包含封面、修订记录和 1-4 章静态内容。")
+    static_start, static_end = find_template_static_chapter_range(template_doc)
+    static_page_count = static_end - static_start + 1
 
     if "5. 测试内容" in heading_pages:
         content_start = heading_pages["5. 测试内容"]
     else:
         content_start = find_heading_page(content_doc, "5. 测试内容", start=0, default=6 if content_doc.page_count > 6 else 0)
     toc_page_count = 2
-    prefix_count = 2 + toc_page_count + 3
+    static_entry_pages = build_static_entry_pages(template_doc, static_start, static_end, toc_page_count)
+    prefix_count = 2 + toc_page_count + static_page_count
     generated_page_count = content_doc.page_count - content_start
     total_pages = prefix_count + generated_page_count
-    entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count)
+    entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count, static_page_count, static_entry_pages)
 
     with tempfile.TemporaryDirectory(prefix="document_filler_toc_") as toc_temp:
         toc_path = Path(toc_temp) / "toc.pdf"
         links, actual_toc_pages = render_toc_pdf(toc_path, entries, total_pages, regular_font, bold_font, min_pages=toc_page_count)
         if actual_toc_pages != toc_page_count:
             toc_page_count = actual_toc_pages
-            prefix_count = 2 + toc_page_count + 3
+            static_entry_pages = build_static_entry_pages(template_doc, static_start, static_end, toc_page_count)
+            prefix_count = 2 + toc_page_count + static_page_count
             total_pages = prefix_count + generated_page_count
-            entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count)
+            entries, _ = build_toc_entries(materials, content_doc, heading_pages, content_start, toc_page_count, static_page_count, static_entry_pages)
             links, actual_toc_pages = render_toc_pdf(toc_path, entries, total_pages, regular_font, bold_font, min_pages=toc_page_count)
 
         toc_doc = fitz.open(str(toc_path))
         final_doc = fitz.open()
         final_doc.insert_pdf(template_doc, from_page=0, to_page=1)
         final_doc.insert_pdf(toc_doc)
-        final_doc.insert_pdf(template_doc, from_page=18, to_page=20)
+        final_doc.insert_pdf(template_doc, from_page=static_start, to_page=static_end)
         final_doc.insert_pdf(content_doc, from_page=content_start, to_page=content_doc.page_count - 1)
 
-        preserved_indices = list(range(0, 2)) + list(range(2 + actual_toc_pages, 2 + actual_toc_pages + 3))
+        preserved_indices = list(range(0, 2)) + list(range(2 + actual_toc_pages, 2 + actual_toc_pages + static_page_count))
         for page_index in preserved_indices:
             patch_template_footer(final_doc[page_index], page_index + 1, final_doc.page_count)
-        for page_index in range(2 + actual_toc_pages + 3, final_doc.page_count):
+        for page_index in range(2 + actual_toc_pages + static_page_count, final_doc.page_count):
             patch_generated_header_footer(final_doc[page_index], page_index + 1, final_doc.page_count)
         for toc_page_index, rect, target_page in links:
             if target_page < final_doc.page_count:
