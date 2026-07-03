@@ -31,12 +31,16 @@ def ensure_module(name, pip_name=None):
 ensure_module("openpyxl")
 ensure_module("docx", "python-docx")
 ensure_module("olefile")
+ensure_module("PIL", "pillow")
+ensure_module("fitz", "pymupdf")
 
 import openpyxl
+import olefile
 from docx import Document
 from docx.shared import Inches
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from PIL import Image
 import struct
 
 HEADER_BG = "F1F1F1"
@@ -97,7 +101,7 @@ def add_solid_borders(tblPr):
 def xml_safe(t):
     if not t: return ""
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', t)
-def mp(text, style_id, indent=None):
+def mp(text, style_id, indent=None, word_wrap=False):
     p = OxmlElement("w:p")
     pr = OxmlElement("w:pPr")
     ps = OxmlElement("w:pStyle")
@@ -107,6 +111,10 @@ def mp(text, style_id, indent=None):
         i = OxmlElement("w:ind")
         i.set(qn("w:firstLine"), str(indent))
         pr.append(i)
+    if word_wrap:
+        ww = OxmlElement("w:wordWrap")
+        ww.set(qn("w:val"), "1")
+        pr.append(ww)
     p.append(pr)
     r = OxmlElement("w:r")
     tt = OxmlElement("w:t")
@@ -115,6 +123,536 @@ def mp(text, style_id, indent=None):
     r.append(tt)
     p.append(r)
     return p
+
+
+DATA_REPORT_CATALOG_COL = "02-数据报表_设计文档-数据来源库表清单对应数据目录代码"
+DATA_REPORT_TEMPLATE_FRAGMENTS = (
+    "围绕业务说明中列明的统计口径和数据目录",
+    "报表需覆盖主要统计对象、关键字段、数据量、更新时间、空值情况和样例数据等内容",
+    "需按工单主题和报表内容命名",
+    "材料应包含统计结果、字段说明和必要的口径说明",
+    "统计范围依据交付物附件整理",
+)
+
+
+def compact_spaces(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def unique_list(values, limit=None):
+    result = []
+    for value in values:
+        value = str(value or "").strip()
+        if value and value not in result:
+            result.append(value)
+            if limit and len(result) >= limit:
+                break
+    return result
+
+
+def extract_data_report_codes(text, include_plain_numbers=True, limit=None):
+    patterns = [r"[A-Z0-9]{5,}/\d{6}", r"\b[A-Z]{1,4}\d{3,}/\d{6}\b"]
+    if include_plain_numbers:
+        patterns.append(r"(?<![A-Za-z0-9])\d{15}(?![A-Za-z0-9])")
+    values = []
+    for pattern in patterns:
+        values.extend(re.findall(pattern, str(text or "")))
+    return unique_list(values, limit)
+
+
+def join_catalog_codes(codes, fallback="相关目录", limit=3):
+    values = unique_list(codes)
+    selected = values[:limit]
+    if not selected:
+        return fallback
+    suffix = "等目录" if len(values) > len(selected) else "目录"
+    return "、".join(selected) + suffix
+
+
+def infer_data_report_subject(row):
+    for key in ("工单内容", "业务说明", "需求描述"):
+        value = compact_spaces(row.get(key, ""))
+        if value:
+            sentence = re.split(r"(?<=[。；;])\s*", value)[0]
+            sentence = re.sub(r"^根据[^，。；;]{0,40}[，,]", "", sentence)
+            return sentence[:90]
+    return "本次数据报表需求"
+
+
+def _ensure_partial_catalog_mentions_use_etc(data_req, catalog_codes):
+    text = str(data_req or "")
+    if not text or not catalog_codes:
+        return text
+    mentioned = [code for code in catalog_codes if code in text]
+    if not mentioned or len(mentioned) >= len(catalog_codes):
+        return text
+    mention_start = min(text.find(code) for code in mentioned if code in text)
+    mention_end = max(text.find(code) + len(code) for code in mentioned if code in text)
+    nearby = text[mention_start : min(len(text), mention_end + 8)]
+    if "等" in nearby:
+        return text
+    code_pattern = r"\s*[、,，]\s*".join(re.escape(code) for code in mentioned)
+    pattern = re.compile(f"({code_pattern})(?:\\s*目录)?")
+    return pattern.sub(lambda match: match.group(1) + "等目录", text, count=1)
+
+
+def _clean_delivery_text(delivery, catalog_codes):
+    text = re.sub(r"[【\[].*?[】\]]", "", str(delivery or ""))
+    if catalog_codes:
+        for code in extract_data_report_codes(text, include_plain_numbers=True):
+            if code not in catalog_codes:
+                text = text.replace(code, "")
+    replacements = [
+        ("验收时抽查", "验收时以"),
+        ("抽查", "确认"),
+        ("复核", "对照"),
+        ("检查", "确认"),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"(及|和|与|、)+并", "并", text)
+    text = re.sub(r"(及|和|与|、)+作为", "作为", text)
+    text = re.sub(r"，+", "，", text).strip("，。；;、 ")
+    return text + "。" if text and not text.endswith(("。", "；", ";")) else text
+
+
+def infer_data_report_requirement(row, catalog_codes):
+    subject = infer_data_report_subject(row)
+    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
+    return f"本次需求围绕{code_hint}开展统计整理，结合{subject}确认字段口径、统计范围和结果呈现内容。"
+
+
+def infer_data_report_delivery(row, catalog_codes):
+    code_hint = join_catalog_codes(catalog_codes, "相关目录", limit=3)
+    subject = infer_data_report_subject(row)
+    return f"交付材料需保留{code_hint}对应的字段列、统计结果和口径说明，验收时以{subject}与业务说明的对应关系作为确认依据。"
+
+
+def infer_data_report_content(row, catalog_codes):
+    subject = infer_data_report_subject(row)
+    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
+    return f"本节围绕{code_hint}展开，结合{subject}中的统计对象和字段口径，展示附件中可见的清单、字段列和统计结果。"
+
+
+def _is_template_like(text):
+    value = str(text or "")
+    return not compact_spaces(value) or any(fragment in value for fragment in DATA_REPORT_TEMPLATE_FRAGMENTS)
+
+
+def normalize_data_report_text_fields(row):
+    normalized = dict(row)
+    catalog_codes = extract_data_report_codes(
+        normalized.get(DATA_REPORT_CATALOG_COL, ""),
+        include_plain_numbers=False,
+    )
+
+    data_req = normalized.get("数据需求", "")
+    if _is_template_like(data_req):
+        data_req = infer_data_report_requirement(normalized, catalog_codes)
+    data_req = _ensure_partial_catalog_mentions_use_etc(data_req, catalog_codes)
+    normalized["数据需求"] = data_req
+
+    delivery = normalized.get("交付要求", "")
+    if _is_template_like(delivery):
+        delivery = infer_data_report_delivery(normalized, catalog_codes)
+    normalized["交付要求"] = _clean_delivery_text(delivery, catalog_codes)
+
+    data_content = normalized.get("数据内容", "")
+    if _is_template_like(data_content):
+        normalized["数据内容"] = infer_data_report_content(normalized, catalog_codes)
+
+    return normalized
+
+
+def quote_ps_path(path):
+    return str(path).replace("'", "''")
+
+
+def crop_and_normalize_image(image_path, min_width=1400, min_height=520):
+    image_path = Path(image_path)
+    if not image_path.exists():
+        return False
+    try:
+        image = Image.open(image_path)
+    except Exception:
+        return False
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        background = Image.new("RGBA", image.size, "white")
+        background.alpha_composite(image.convert("RGBA"))
+        image = background.convert("RGB")
+    else:
+        image = image.convert("RGB")
+    mask = image.point(lambda value: 255 if value < 245 else 0)
+    bbox = mask.getbbox()
+    if bbox:
+        left, top, right, bottom = bbox
+        padding = 18
+        image = image.crop((
+            max(0, left - padding),
+            max(0, top - padding),
+            min(image.width, right + padding),
+            min(image.height, bottom + padding),
+        ))
+    scale = max(min_width / image.width, min_height / image.height, 1)
+    if scale > 1:
+        image = image.resize((int(image.width * scale), int(image.height * scale)), Image.Resampling.LANCZOS)
+    image.save(image_path)
+    return image_path.exists() and image_path.stat().st_size > 0
+
+
+def select_excel_preview_range(excel_path):
+    wb = openpyxl.load_workbook(excel_path, data_only=True, read_only=True)
+    try:
+        best = None
+        for ws in wb.worksheets:
+            first_row = first_col = None
+            last_row = last_col = 0
+            non_empty = 0
+            for r_idx, row in enumerate(ws.iter_rows(), start=1):
+                for c_idx, cell in enumerate(row, start=1):
+                    value = cell.value
+                    if value is None or str(value).strip() == "":
+                        continue
+                    first_row = r_idx if first_row is None else min(first_row, r_idx)
+                    first_col = c_idx if first_col is None else min(first_col, c_idx)
+                    last_row = max(last_row, r_idx)
+                    last_col = max(last_col, c_idx)
+                    non_empty += 1
+            if first_row is None:
+                continue
+            rows = max(1, last_row - first_row + 1)
+            cols = max(1, last_col - first_col + 1)
+            score = non_empty * 12 + min(rows, 60) * 2 + min(cols, 20)
+            if best is None or score > best[0]:
+                best = (score, ws.title, first_row, first_col, last_row, last_col)
+        if best is None:
+            return None
+        _, sheet_name, first_row, first_col, last_row, last_col = best
+        used_rows = max(1, last_row - first_row + 1)
+        used_cols = max(1, last_col - first_col + 1)
+        row_cap = min(used_rows, 32)
+        if used_rows <= 8:
+            col_cap = min(used_cols, 16)
+        elif used_cols <= 8:
+            col_cap = used_cols
+        else:
+            col_cap = min(used_cols, 9)
+        return sheet_name, first_row, first_col, first_row + row_cap - 1, first_col + col_cap - 1
+    finally:
+        wb.close()
+
+
+def excel_range_to_png(source, target):
+    source = Path(source)
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    selected = select_excel_preview_range(source)
+    if not selected:
+        return False
+    sheet_name, first_row, first_col, last_row, last_col = selected
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+$excel = $null
+$wb = $null
+$chartObj = $null
+try {{
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  $wb = $excel.Workbooks.Open('{quote_ps_path(source)}', 0, $true)
+  $ws = $wb.Worksheets.Item('{quote_ps_path(sheet_name)}')
+  $ws.Activate()
+  if ($excel.ActiveWindow -ne $null) {{ $excel.ActiveWindow.Zoom = 180 }}
+  $range = $ws.Range($ws.Cells({first_row}, {first_col}), $ws.Cells({last_row}, {last_col}))
+  $range.CopyPicture(1, 2)
+  Start-Sleep -Milliseconds 700
+  $chartWidth = [Math]::Max(1000, [Math]::Min(2400, $range.Width * 2.4))
+  $chartHeight = [Math]::Max(520, [Math]::Min(1600, $range.Height * 2.4))
+  $chartObj = $ws.ChartObjects().Add($range.Left, $range.Top, $chartWidth, $chartHeight)
+  $chart = $chartObj.Chart
+  $chart.ChartArea.Format.Line.Visible = 0
+  $chart.ChartArea.Format.Fill.Visible = -1
+  $chart.ChartArea.Format.Fill.ForeColor.RGB = 16777215
+  $chart.Paste()
+  if ($chart.Shapes.Count -gt 0) {{
+    $shape = $chart.Shapes.Item(1)
+    $shape.LockAspectRatio = -1
+    $scale = [Math]::Min(($chartWidth - 6) / $shape.Width, ($chartHeight - 6) / $shape.Height)
+    if ($scale -gt 1) {{ $shape.Width = $shape.Width * $scale }}
+    $shape.Left = 3
+    $shape.Top = 3
+  }}
+  $chart.Export('{quote_ps_path(target)}', 'PNG')
+}} finally {{
+  if ($chartObj -ne $null) {{ $chartObj.Delete() }}
+  if ($wb -ne $null) {{ $wb.Close($false) }}
+  if ($excel -ne $null) {{ $excel.Quit() }}
+}}
+"""
+    proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0 or not target.exists() or target.stat().st_size == 0:
+        return False
+    return crop_and_normalize_image(target)
+
+
+def office_export_to_pdf(source, target):
+    source = Path(source)
+    target = Path(target)
+    suffix = source.suffix.lower()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    if suffix in {".docx", ".doc"}:
+        ps = f"""
+$ErrorActionPreference = 'Stop'
+$word = $null
+try {{
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $false
+  $word.DisplayAlerts = 0
+  $doc = $word.Documents.Open('{quote_ps_path(source)}')
+  $doc.SaveAs([ref]'{quote_ps_path(target)}', [ref]17)
+  $doc.Close($false)
+}} finally {{
+  if ($word -ne $null) {{ $word.Quit() }}
+}}
+"""
+    elif suffix in {".xlsx", ".xls"}:
+        ps = f"""
+$ErrorActionPreference = 'Stop'
+$excel = $null
+try {{
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  $wb = $excel.Workbooks.Open('{quote_ps_path(source)}')
+  foreach ($ws in $wb.Worksheets) {{ $ws.PageSetup.Zoom = $false; $ws.PageSetup.FitToPagesWide = 1; $ws.PageSetup.FitToPagesTall = $false }}
+  $wb.ExportAsFixedFormat(0, '{quote_ps_path(target)}')
+  $wb.Close($false)
+}} finally {{
+  if ($excel -ne $null) {{ $excel.Quit() }}
+}}
+"""
+    else:
+        return False
+    proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=120)
+    return proc.returncode == 0 and target.exists() and target.stat().st_size > 0
+
+
+def render_pdf_first_page(pdf_path, image_path):
+    import fitz
+
+    pdf_path = Path(pdf_path)
+    image_path = Path(image_path)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        pdf = fitz.open(str(pdf_path))
+        if len(pdf) == 0:
+            pdf.close()
+            return False
+        page = pdf[0]
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), alpha=False)
+        pixmap.save(str(image_path))
+        pdf.close()
+    except Exception:
+        return False
+    return crop_and_normalize_image(image_path)
+
+
+def choose_screenshot_source(files):
+    preferred = {".xlsx": 0, ".xls": 0, ".pdf": 1, ".docx": 2, ".doc": 2}
+    candidates = [Path(path) for path in files if Path(path).suffix.lower() in preferred and Path(path).exists()]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: (preferred[path.suffix.lower()], -(path.stat().st_size if path.exists() else 0)))
+    return candidates[0]
+
+
+def generate_attachment_screenshot_bytes(files, work_dir, row_number):
+    source = choose_screenshot_source(files)
+    if not source:
+        return None
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    image_path = work_dir / f"row{int(row_number):02d}_attachment_screenshot.png"
+    suffix = source.suffix.lower()
+    if suffix in {".xlsx", ".xls"} and excel_range_to_png(source, image_path):
+        return image_path.read_bytes()
+    pdf_path = source if suffix == ".pdf" else work_dir / f"row{int(row_number):02d}_{safe_file_name(source.stem)}.pdf"
+    if suffix != ".pdf" and not office_export_to_pdf(source, pdf_path):
+        return None
+    if pdf_path.exists() and render_pdf_first_page(pdf_path, image_path):
+        return image_path.read_bytes()
+    return None
+
+
+def safe_file_name(value):
+    value = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", str(value or ""))
+    return value.strip(" ._") or "attachment"
+
+
+def zip_office_suffix(payload):
+    suffix = ".zip"
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            names = zf.namelist()
+        if "[Content_Types].xml" in names and any(name.startswith("word/") for name in names):
+            suffix = ".docx"
+        elif "[Content_Types].xml" in names and any(name.startswith("xl/") for name in names):
+            suffix = ".xlsx"
+        elif "[Content_Types].xml" in names and any(name.startswith("ppt/") for name in names):
+            suffix = ".pptx"
+    except Exception:
+        suffix = ".zip"
+    return suffix
+
+
+def write_detected_payload(row_dir, base, payload, files):
+    if payload.startswith(b"PK\x03\x04"):
+        suffix = zip_office_suffix(payload)
+        target = row_dir / f"{safe_file_name(base)}{suffix}"
+        target.write_bytes(payload)
+        files.append(target)
+    elif payload.startswith(b"%PDF"):
+        target = row_dir / f"{safe_file_name(base)}.pdf"
+        target.write_bytes(payload)
+        files.append(target)
+
+
+def extract_ole_native_payload(payload):
+    for signature in (b"PK\x03\x04", b"%PDF"):
+        index = payload.find(signature)
+        if index >= 0:
+            return payload[index:]
+    return None
+
+
+def expand_zip_payloads(path, row_dir, files):
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for name in zf.namelist():
+                suffix = Path(name).suffix.lower()
+                if suffix not in {".docx", ".xlsx", ".xls", ".pdf"}:
+                    continue
+                target = row_dir / "expanded" / safe_file_name(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(zf.read(name))
+                files.append(target)
+    except Exception:
+        return
+
+
+def _sheet_rel_target(target):
+    if target.startswith("../"):
+        return "xl/" + target[3:]
+    if target.startswith("/"):
+        return target.lstrip("/")
+    if target.startswith("xl/"):
+        return target
+    return "xl/worksheets/" + target
+
+
+def extract_deliverable_attachments(excel_path, row_numbers, extract_dir):
+    row_numbers = {int(row) for row in row_numbers}
+    extract_dir = Path(extract_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    result = {row: [] for row in row_numbers}
+    try:
+        with zipfile.ZipFile(excel_path, "r") as zf:
+            names = set(zf.namelist())
+            required = {"xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels", "xl/drawings/vmlDrawing1.vml"}
+            if not required.issubset(names):
+                return result
+            sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8", errors="replace")
+            rels = zf.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8", errors="replace")
+            vml = zf.read("xl/drawings/vmlDrawing1.vml").decode("utf-8", errors="replace")
+            rel_map = {
+                match.group(1): _sheet_rel_target(match.group(3))
+                for match in re.finditer(r'<Relationship[^>]*Id="(rId\d+)"[^>]*Type="([^"]+)"[^>]*Target="([^"]+)"', rels)
+            }
+            anchors = {}
+            for match in re.finditer(r"<v:shape\b(.*?)</v:shape>", vml, re.DOTALL):
+                body = match.group(1)
+                id_match = re.search(r'id="([^"]+)"', body)
+                anchor_match = re.search(r"<x:Anchor>([^<]+)</x:Anchor>", body)
+                if not id_match or not anchor_match:
+                    continue
+                parts = [int(part.strip()) for part in anchor_match.group(1).split(",")]
+                anchors[id_match.group(1)] = parts[2] + 1
+            seen = set()
+            for match in re.finditer(r'<oleObject[^>]*shapeId="(\d+)"[^>]*r:id="(rId\d+)"', sheet):
+                shape_id, rid = match.groups()
+                if (shape_id, rid) in seen or rid not in rel_map:
+                    continue
+                seen.add((shape_id, rid))
+                row = None
+                for shape, anchored_row in anchors.items():
+                    if shape.endswith("_s" + shape_id):
+                        row = anchored_row
+                        break
+                if row not in row_numbers:
+                    continue
+                target = rel_map[rid]
+                try:
+                    data = zf.read(target)
+                except Exception:
+                    continue
+                row_dir = extract_dir / f"row{row:02d}"
+                row_dir.mkdir(parents=True, exist_ok=True)
+                raw_path = row_dir / Path(target).name
+                raw_path.write_bytes(data)
+                files = result.setdefault(row, [])
+                if data.startswith(b"PK\x03\x04"):
+                    suffix = zip_office_suffix(data)
+                    final = row_dir / f"deliverable_row{row:02d}{suffix}"
+                    raw_path.replace(final)
+                    files.append(final)
+                    if suffix == ".zip":
+                        expand_zip_payloads(final, row_dir, files)
+                elif data.startswith(bytes.fromhex("d0cf11e0a1b11ae1")):
+                    try:
+                        ole = olefile.OleFileIO(str(raw_path))
+                        for stream in ole.listdir():
+                            try:
+                                payload = ole.openstream(stream).read()
+                            except Exception:
+                                continue
+                            stream_name = safe_file_name("_".join(stream))
+                            if stream_name.lower() == "workbook":
+                                workbook_path = row_dir / f"{stream_name}.xls"
+                                workbook_path.write_bytes(data)
+                                files.append(workbook_path)
+                            write_detected_payload(row_dir, stream_name, payload, files)
+                            nested = extract_ole_native_payload(payload)
+                            if nested and nested != payload:
+                                write_detected_payload(row_dir, f"{stream_name}_embedded", nested, files)
+                        ole.close()
+                    except Exception:
+                        pass
+                    for zip_path in list(row_dir.glob("*.zip")):
+                        expand_zip_payloads(zip_path, row_dir, files)
+    except Exception:
+        return result
+    return result
+
+
+def build_attachment_previews(excel_path, row_numbers):
+    with tempfile.TemporaryDirectory(prefix="document_filler_attachments_") as temp_dir:
+        temp = Path(temp_dir)
+        attachments = extract_deliverable_attachments(excel_path, row_numbers, temp / "attachments")
+        previews = {}
+        for row, files in attachments.items():
+            payload = generate_attachment_screenshot_bytes(files, temp / "previews", row)
+            if payload:
+                previews[row] = payload
+        return previews
+
+
+def build_launch_identifier_line(row):
+    return f"需求编号：{row.get('需求单号', '')}\t对应工单编号：{row.get('工单号', '')}"
 
 def make_cell_oxml(text, grid_span=None, bold=False, bg=None, align=None):
     tc = OxmlElement("w:tc")
@@ -645,6 +1183,7 @@ def fill_requirement_doc(data_rows, template_path, output_path):
 
     new_elems = []
     for rd in data_rows:
+        rd = normalize_data_report_text_fields(rd)
         gongdan = rd["工单内容"]
         biz = rd["业务说明"]
         data_req = rd["数据需求"]
@@ -914,9 +1453,16 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
     img_cols = ["02-数据报表_设计文档-数据内容截图", "数据处理逻辑"]
     cell_imgs = match_images_to_cells(excel_path, imgs, img_cols, row_nums)
     print(f"匹配到 {len(cell_imgs)} 张图片")
+    attachment_previews = build_attachment_previews(excel_path, row_nums)
+    if attachment_previews:
+        print(f"附件截图: {len(attachment_previews)} 张")
 
     for rd in data_rows:
-        rd["_img_content"] = cell_imgs.get((rd["_row"], "02-数据报表_设计文档-数据内容截图"))
+        rd.update(normalize_data_report_text_fields(rd))
+        rd["_img_content"] = (
+            cell_imgs.get((rd["_row"], "02-数据报表_设计文档-数据内容截图"))
+            or attachment_previews.get(rd["_row"])
+        )
         rd["_img_logic"] = cell_imgs.get((rd["_row"], "数据处理逻辑"))
         rd["_logic_is_img"] = "DISPIMG" in rd.get("数据处理逻辑", "")
 
@@ -1151,9 +1697,9 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
         gd = rd.get("工单内容", "")
         body.append(mp(f"{gd}的上线记录", S["Heading 1"]))
         body.append(mp("产出说明", S["Heading 2"]))
-        body.append(mp(f"需求编号：\t{rd.get('需求单号', '')}\t对应工单编号：\t{rd.get('工单号', '')}", S["Body Text"]))
+        body.append(mp(build_launch_identifier_line(rd), S["Body Text"], 480, word_wrap=True))
         body.append(mp(f"需求描述：{rd.get('需求描述', '')}", S["Body Text"], 480))
-        body.append(mp(f"统计报表：{rd.get('报表统计次数', '')}次。", S["Normal"]))
+        body.append(mp(f"统计报表：{rd.get('报表统计次数', '')}次。", S["Normal"], 480, word_wrap=True))
         body.append(mp("上线交付截图", S["Heading 2"]))
         body.append(mp("", S["Body Text"]))
         body.append(mp("", S["Body Text"]))
