@@ -9,7 +9,7 @@
     python fill_document.py --service-dir "N08-数据报表服务" --material-type "02-数据报表_设计文档" --excel "台账清单.xlsx" --template "模板.docx" --catalog "数据目录数据.xlsx" --output "输出.docx"
 """
 
-import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util
+import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -67,6 +67,8 @@ def resolve_output_path(output_path, material_type):
 # Shared Helpers
 # ══════════════════════════════════════════════════════════════
 
+_STATS_RESULT_BUILDER = None
+
 def read_excel(excel_path, service_dir):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     ws = wb.active
@@ -85,6 +87,33 @@ def read_excel(excel_path, service_dir):
     if not rows:
         raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
     return rows
+
+
+def excel_column_numbers(excel_path, header_names):
+    try:
+        wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+        ws = wb.active
+        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        wanted = set(header_names)
+        wb.close()
+        return [idx + 1 for idx, header in enumerate(headers) if header in wanted]
+    except Exception:
+        return []
+
+
+def load_stats_result_builder():
+    global _STATS_RESULT_BUILDER
+    if _STATS_RESULT_BUILDER is not None:
+        return _STATS_RESULT_BUILDER
+    script_path = Path(__file__).resolve().parent / "build_stats_result_usage_workbook.py"
+    spec = importlib.util.spec_from_file_location("_document_filler_stats_result_builder", script_path)
+    module = importlib.util.module_from_spec(spec)
+    if spec.loader is None:
+        raise ImportError(f"无法加载统计分析结果表解析脚本: {script_path}")
+    spec.loader.exec_module(module)
+    _STATS_RESULT_BUILDER = module
+    return module
+
 
 def add_solid_borders(tblPr):
     borders = OxmlElement("w:tblBorders")
@@ -235,6 +264,118 @@ def infer_data_report_content(row, catalog_codes):
     return f"本节围绕{code_hint}展开，结合{subject}中的统计对象和字段口径，展示附件中可见的清单、字段列和统计结果。"
 
 
+def ensure_cn_period(text):
+    text = compact_spaces(text)
+    if not text:
+        return ""
+    return text if text.endswith(("。", "；", ";")) else text + "。"
+
+
+def first_sentence_from_fields(row, field_names, fallback="", limit=120):
+    for field_name in field_names:
+        value = compact_spaces(row.get(field_name, ""))
+        if not value:
+            continue
+        sentence = re.split(r"(?<=[。；;])\s*", value)[0]
+        return sentence[:limit]
+    return fallback
+
+
+def display_name_list(values, fallback, limit=3):
+    names = []
+    for value in values or []:
+        name = compact_spaces(Path(str(value)).stem if "." in str(value) else value)
+        if name and name not in names:
+            names.append(name)
+            if len(names) >= limit:
+                break
+    if not names:
+        return fallback
+    suffix = "等" if len(unique_list(values)) > len(names) else ""
+    return "、".join(names) + suffix
+
+
+def data_report_program_labels(row, limit=3):
+    labels = []
+    for program in row.get("_programs") or []:
+        cn = compact_spaces(program.get("program_cn", ""))
+        en = compact_spaces(program.get("program_en", ""))
+        if cn and en:
+            label = f"{cn}（{en}）"
+        else:
+            label = cn or en
+        if label and label not in labels:
+            labels.append(label)
+    if not labels:
+        for cn, en in parse_report_list(row.get("统计分析结果表清单", "")):
+            label = f"{cn}（{en}）" if cn and en else cn or en
+            if label and label not in labels:
+                labels.append(label)
+    return display_name_list(labels, "相关报表程序", limit=limit)
+
+
+def data_report_field_comment_hint(row, limit=4):
+    comments = []
+    for program in row.get("_programs") or []:
+        field_comments = program.get("field_comments")
+        if field_comments is None and program.get("xml"):
+            try:
+                field_comments = extract_indicator_field_comments_from_program(program)
+            except Exception:
+                field_comments = []
+        for comment in field_comments or []:
+            text = compact_spaces(comment)
+            if text and text not in comments:
+                comments.append(text)
+                if len(comments) >= limit:
+                    break
+        if len(comments) >= limit:
+            break
+    if not comments:
+        return ""
+    suffix = "等字段" if len(comments) >= limit else "字段"
+    return f"，重点字段包括{'、'.join(comments)}{suffix}"
+
+
+def infer_data_report_content_description(row, catalog_codes):
+    subject = infer_data_report_subject(row)
+    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
+    basis = first_sentence_from_fields(row, ("业务说明", "业务描述"), "")
+    if basis:
+        return ensure_cn_period(f"{basis}本工单围绕{code_hint}梳理{subject}涉及的统计口径、字段范围和交付附件")
+    return ensure_cn_period(f"本工单围绕{subject}和{code_hint}梳理报表统计口径、字段范围和交付附件")
+
+
+def infer_data_report_business_scene(row, catalog_codes):
+    subject = infer_data_report_subject(row)
+    scene = first_sentence_from_fields(row, ("业务描述", "业务说明"), "")
+    if scene and len(scene) >= 8:
+        return ensure_cn_period(f"{scene}上线后用于支撑{subject}相关统计结果查看、业务核验和材料归档")
+    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
+    return ensure_cn_period(f"该报表服务用于支撑{subject}相关业务办理，按{code_hint}统一统计口径后提供给业务人员查看、核验和归档")
+
+
+def infer_data_report_result_form(row):
+    attachment_names = collect_attachment_report_names(row.get("_attachment_names") or [])
+    report_names = display_name_list(attachment_names, "", limit=3)
+    if not report_names:
+        parsed_names = [cn or en for cn, en in parse_report_list(row.get("统计分析结果表清单", ""))]
+        report_names = display_name_list(parsed_names, "", limit=3)
+    if not report_names:
+        report_names = infer_data_report_subject(row)
+    return ensure_cn_period(f"最终形成{report_names}报表成果，随文档保留统计结果、字段口径、数据来源清单和必要截图材料")
+
+
+def infer_data_report_processing_logic(row, catalog_codes):
+    subject = infer_data_report_subject(row)
+    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
+    program_hint = data_report_program_labels(row)
+    field_hint = data_report_field_comment_hint(row)
+    return ensure_cn_period(
+        f"根据{subject}的统计口径，读取{code_hint}并通过{program_hint}完成数据抽取、字段整理、统计汇总和结果写入{field_hint}"
+    )
+
+
 def _is_template_like(text):
     value = str(text or "")
     return not compact_spaces(value) or any(fragment in value for fragment in DATA_REPORT_TEMPLATE_FRAGMENTS)
@@ -261,6 +402,22 @@ def normalize_data_report_text_fields(row):
     data_content = normalized.get("数据内容", "")
     if _is_template_like(data_content):
         normalized["数据内容"] = infer_data_report_content(normalized, catalog_codes)
+
+    content_desc = normalized.get("内容描述", "")
+    if _is_template_like(content_desc):
+        normalized["内容描述"] = infer_data_report_content_description(normalized, catalog_codes)
+
+    business_scene = normalized.get("业务场景", "")
+    if _is_template_like(business_scene):
+        normalized["业务场景"] = infer_data_report_business_scene(normalized, catalog_codes)
+
+    result_form = normalized.get("结果形式", "")
+    if _is_template_like(result_form):
+        normalized["结果形式"] = infer_data_report_result_form(normalized)
+
+    processing_logic = normalized.get("数据处理逻辑", "")
+    if _is_template_like(processing_logic):
+        normalized["数据处理逻辑"] = infer_data_report_processing_logic(normalized, catalog_codes)
 
     return normalized
 
@@ -299,6 +456,22 @@ def crop_and_normalize_image(image_path, min_width=1400, min_height=520):
         image = image.resize((int(image.width * scale), int(image.height * scale)), Image.Resampling.LANCZOS)
     image.save(image_path)
     return image_path.exists() and image_path.stat().st_size > 0
+
+
+def image_bytes_for_docx(payload):
+    try:
+        image = Image.open(io.BytesIO(payload))
+        if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+            background = Image.new("RGBA", image.size, "white")
+            background.alpha_composite(image.convert("RGBA"))
+            image = background.convert("RGB")
+        else:
+            image = image.convert("RGB")
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        return None
 
 
 def select_excel_preview_range(excel_path):
@@ -439,7 +612,14 @@ try {{
     else:
         return False
     proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=120)
-    return proc.returncode == 0 and target.exists() and target.stat().st_size > 0
+    return office_export_created_output(proc.returncode, target)
+
+
+def office_export_created_output(returncode, target):
+    target = Path(target)
+    if target.exists() and target.stat().st_size > 0:
+        return True
+    return returncode == 0
 
 
 def render_pdf_first_page(pdf_path, image_path):
@@ -479,7 +659,7 @@ def generate_attachment_screenshot_bytes(files, work_dir, row_number):
     work_dir.mkdir(parents=True, exist_ok=True)
     image_path = work_dir / f"row{int(row_number):02d}_attachment_screenshot.png"
     suffix = source.suffix.lower()
-    if suffix in {".xlsx", ".xls"} and excel_range_to_png(source, image_path):
+    if suffix == ".xlsx" and excel_range_to_png(source, image_path):
         return image_path.read_bytes()
     pdf_path = source if suffix == ".pdf" else work_dir / f"row{int(row_number):02d}_{safe_file_name(source.stem)}.pdf"
     if suffix != ".pdf" and not office_export_to_pdf(source, pdf_path):
@@ -555,8 +735,9 @@ def _sheet_rel_target(target):
     return "xl/worksheets/" + target
 
 
-def extract_deliverable_attachments(excel_path, row_numbers, extract_dir):
+def extract_deliverable_attachments(excel_path, row_numbers, extract_dir, col_numbers=None):
     row_numbers = {int(row) for row in row_numbers}
+    col_numbers = {int(col) for col in col_numbers} if col_numbers else None
     extract_dir = Path(extract_dir)
     extract_dir.mkdir(parents=True, exist_ok=True)
     result = {row: [] for row in row_numbers}
@@ -581,19 +762,19 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir):
                 if not id_match or not anchor_match:
                     continue
                 parts = [int(part.strip()) for part in anchor_match.group(1).split(",")]
-                anchors[id_match.group(1)] = parts[2] + 1
+                anchors[id_match.group(1)] = (parts[2] + 1, parts[0] + 1)
             seen = set()
             for match in re.finditer(r'<oleObject[^>]*shapeId="(\d+)"[^>]*r:id="(rId\d+)"', sheet):
                 shape_id, rid = match.groups()
                 if (shape_id, rid) in seen or rid not in rel_map:
                     continue
                 seen.add((shape_id, rid))
-                row = None
-                for shape, anchored_row in anchors.items():
+                row = col = None
+                for shape, anchor in anchors.items():
                     if shape.endswith("_s" + shape_id):
-                        row = anchored_row
+                        row, col = anchor
                         break
-                if row not in row_numbers:
+                if row not in row_numbers or (col_numbers and col not in col_numbers):
                     continue
                 target = rel_map[rid]
                 try:
@@ -642,7 +823,12 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir):
 def build_attachment_previews(excel_path, row_numbers):
     with tempfile.TemporaryDirectory(prefix="document_filler_attachments_") as temp_dir:
         temp = Path(temp_dir)
-        attachments = extract_deliverable_attachments(excel_path, row_numbers, temp / "attachments")
+        attachments = extract_deliverable_attachments(
+            excel_path,
+            row_numbers,
+            temp / "attachments",
+            excel_column_numbers(excel_path, ["交付物"]) or None,
+        )
         previews = {}
         for row, files in attachments.items():
             payload = generate_attachment_screenshot_bytes(files, temp / "previews", row)
@@ -653,6 +839,21 @@ def build_attachment_previews(excel_path, row_numbers):
 
 def build_launch_identifier_line(row):
     return f"需求编号：{row.get('需求单号', '')}\t对应工单编号：{row.get('工单号', '')}"
+
+
+def build_launch_requirement_description(row):
+    for field_name in ("需求描述", "业务说明", "业务描述"):
+        value = compact_spaces(row.get(field_name, ""))
+        if value:
+            return value
+    subject = infer_data_report_subject(row)
+    return ensure_cn_period(f"本次上线围绕{subject}完成数据报表产出、交付和使用记录归档")
+
+
+def launch_image_columns_for_row(row, cell_imgs, columns):
+    row_number = row.get("_row")
+    return [column for column in columns if (row_number, column) in cell_imgs]
+
 
 def make_cell_oxml(text, grid_span=None, bold=False, bg=None, align=None, width=None):
     tc = OxmlElement("w:tc")
@@ -965,6 +1166,68 @@ def read_stats_requirement_groups(excel_path, service_dir):
     return groups
 
 
+def read_data_report_design_groups(excel_path, service_dir):
+    wb = openpyxl.load_workbook(excel_path, data_only=False)
+    ws = wb.active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    if "服务目录" not in headers:
+        raise ValueError("台账清单缺少「服务目录」列")
+    get = merged_value_getter(ws)
+    service_col = headers.index("服务目录") + 1
+    result_col = headers.index("统计分析结果表清单") + 1 if "统计分析结果表清单" in headers else None
+    xml_col = headers.index("程序XML文本") + 1 if "程序XML文本" in headers else None
+    logic_col = headers.index("数据处理逻辑") if "数据处理逻辑" in headers else -1
+    groups = []
+    by_key = {}
+
+    for row in range(2, ws.max_row + 1):
+        if get(row, service_col) != service_dir:
+            continue
+        record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
+        key = record.get("工单号") or f"{record.get('需求单号', '')}|{record.get('工单内容', '')}|{row}"
+        if key not in by_key:
+            record["_row"] = row
+            record["_vml_row"] = row - 1
+            record["_vml_col"] = logic_col
+            record["_row_numbers"] = []
+            record["_programs"] = []
+            by_key[key] = record
+            groups.append(record)
+
+        group = by_key[key]
+        group["_row_numbers"].append(row)
+        program_text = ""
+        if result_col:
+            program_text = str(ws.cell(row, result_col).value or "").strip()
+            if not program_text:
+                program_text = get(row, result_col)
+        xml_text = ""
+        if xml_col:
+            xml_text = str(ws.cell(row, xml_col).value or "").strip()
+            if not xml_text:
+                xml_text = get(row, xml_col)
+        for program_cn, program_en in parse_report_list(program_text):
+            program = {
+                "program_cn": program_cn,
+                "program_en": program_en,
+                "xml": xml_text,
+                "row": row,
+            }
+            if program not in group["_programs"]:
+                group["_programs"].append(program)
+
+    for group in groups:
+        group["统计分析结果表清单"] = "\n".join(
+            f"{item['program_cn']} {item['program_en']}".strip()
+            for item in group.get("_programs", [])
+        )
+        group["_row_numbers"] = sorted(set(group.get("_row_numbers", [group["_row"]])))
+
+    if not groups:
+        raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
+    return groups
+
+
 def resolve_stats_relation_workbook(template_path, relation_hint=None, output_path=None):
     candidates = []
     if relation_hint:
@@ -1251,7 +1514,189 @@ INDICATOR_DATA = [
     ["各报表目录详情", "样例数据", "该字段示例", "无", "文本", "无", "样例数据"],
 ]
 
-def mk_indicator_table():
+def clean_attachment_report_name(value):
+    name = Path(str(value or "")).name.strip()
+    stem = Path(name).stem if name else ""
+    generated_names = {"Ole10Native_embedded", "Workbook_embedded", "Workbook", "package"}
+    if stem in generated_names or re.fullmatch(r"deliverable_row\d+", stem, flags=re.I):
+        return ""
+    return stem or name
+
+
+def collect_attachment_report_names(files):
+    names = []
+    for path in files:
+        report_name = clean_attachment_report_name(path)
+        if report_name and report_name not in names:
+            names.append(report_name)
+    return names
+
+
+def _extract_sqls_from_program_xml(xml_text):
+    if not xml_text:
+        return []
+    try:
+        builder = load_stats_result_builder()
+        nodes, _edges = builder.parse_xml_program(xml_text)
+        return [str(node.get("sql") or "") for node in nodes if node.get("sql")]
+    except Exception:
+        pass
+    text = str(xml_text)
+    sqls = []
+    for match in re.finditer(r'modelData="([^"]*)"', text):
+        raw = html.unescape(match.group(1))
+        try:
+            value = json.loads(raw)
+        except Exception:
+            value = {}
+        sql = str(value.get("sql") or "") if isinstance(value, dict) else ""
+        if sql:
+            sqls.append(html.unescape(sql))
+    if sqls:
+        return sqls
+    return [html.unescape(re.sub(r"</?[^>]+>", " ", text))]
+
+
+def _candidate_sql_targets(sqls, preferred_target):
+    builder = load_stats_result_builder()
+    targets = []
+    preferred = builder.norm_name(preferred_target) if preferred_target else ""
+    if preferred:
+        targets.append(preferred)
+    pattern = re.compile(
+        r"create\s+(?:external\s+)?table\s+(?:if\s+not\s+exists\s+)?[`\"]?([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?|\$\{[^}]+\})[`\"]?",
+        flags=re.I,
+    )
+    for sql in sqls:
+        for match in pattern.finditer(sql):
+            target = builder.norm_name(match.group(1))
+            if target and target not in targets:
+                targets.append(target)
+    return targets
+
+
+INSERT_FIELD_LABELS = {
+    "CATA_CODE": "目录代码",
+    "CATA_TITLE": "目录名称",
+    "PROVIDER_NAME": "提供方名称",
+    "SCHEMA_NAME": "库名",
+    "TABLE_NAME": "资源表名",
+    "TABLE_COMMENTS": "表注释",
+    "CLOUMN_NAME": "字段名",
+    "COLUMN_NAME": "字段名",
+    "CLOUMN_COMMENTS": "字段注释",
+    "COLUMN_COMMENTS": "字段注释",
+    "DATA_COUNT": "数据量",
+    "EMPTY_VALUE": "空值数",
+    "EMPTY_VALUE_RATE": "空值率",
+    "IS_PROCESS": "是否加工",
+    "UPDATE_FREQUENCY": "更新频率",
+    "LAST_UPDATE_TIME": "最后更新时间",
+    "SAMPLE_DATA1": "样例数据1",
+    "SAMPLE_DATA2": "样例数据2",
+    "SAMPLE_DATA3": "样例数据3",
+    "SAMPLE_DATA4": "样例数据4",
+    "SAMPLE_DATA5": "样例数据5",
+}
+
+
+def split_sql_csv(text):
+    items = []
+    current = ""
+    depth = 0
+    quote = None
+    for ch in text:
+        if quote:
+            current += ch
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"`":
+            quote = ch
+            current += ch
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            if current.strip():
+                items.append(current.strip())
+            current = ""
+            continue
+        current += ch
+    if current.strip():
+        items.append(current.strip())
+    return items
+
+
+def extract_insert_field_labels(sqls):
+    labels = []
+    pattern = re.compile(r"insert\s+into\s+[^\s(]+\s*\((.*?)\)\s*values\s*\(", flags=re.I | re.S)
+    for sql in sqls:
+        for match in pattern.finditer(sql):
+            for raw in split_sql_csv(match.group(1)):
+                key = re.sub(r"[^A-Za-z0-9_]", "", raw).upper()
+                if not key:
+                    continue
+                label = INSERT_FIELD_LABELS.get(key, raw.strip("`\" "))
+                if label and label not in labels:
+                    labels.append(label)
+    return labels
+
+
+def extract_indicator_field_comments_from_program(program):
+    sqls = _extract_sqls_from_program_xml(program.get("xml", ""))
+    if not sqls:
+        return []
+    builder = load_stats_result_builder()
+    fields = []
+    for target in _candidate_sql_targets(sqls, program.get("program_en", "")):
+        fields = builder.parse_result_fields_from_sql(sqls, target)
+        if fields:
+            break
+    if not fields:
+        for sql in sqls:
+            fields = builder.parse_result_fields_from_sql([sql], "")
+            if fields:
+                break
+    if not fields:
+        return extract_insert_field_labels(sqls)
+    comments = []
+    for field in fields:
+        comment = (
+            str(field.get("字段注释") or "").strip()
+            or str(field.get("字段中文名") or "").strip()
+            or str(field.get("字段英文名") or "").strip()
+        )
+        if comment and comment not in comments:
+            comments.append(comment)
+    return comments
+
+
+def build_data_report_indicator_rows(programs, attachment_names):
+    report_names = collect_attachment_report_names(attachment_names)
+    rows = []
+    for index, program in enumerate(programs or []):
+        if report_names:
+            report_name = report_names[index % len(report_names)]
+        else:
+            report_name = program.get("program_cn") or program.get("program_en") or "报表成果"
+        field_comments = program.get("field_comments")
+        if field_comments is None:
+            field_comments = extract_indicator_field_comments_from_program(program)
+        if not field_comments:
+            field_comments = [program.get("program_cn") or program.get("program_en") or "未解析到字段信息"]
+        for comment in field_comments:
+            text = str(comment or "").strip()
+            if not text:
+                continue
+            rows.append([report_name, text, text, "无", "文本", "无", text])
+    return rows or INDICATOR_DATA
+
+
+def mk_indicator_table(rows_data=None):
+    rows_data = rows_data if rows_data is not None else INDICATOR_DATA
     tbl = OxmlElement("w:tbl")
     tp = OxmlElement("w:tblPr")
     ts = OxmlElement("w:tblStyle")
@@ -1274,7 +1719,7 @@ def mk_indicator_table():
     for h_text in INDICATOR_HEADERS:
         tr_h.append(make_cell_oxml(h_text, bold=True, bg=HEADER_BG))
     tbl.append(tr_h)
-    for rd in INDICATOR_DATA:
+    for rd in rows_data:
         tr = OxmlElement("w:tr")
         for v in rd:
             tr.append(make_cell_oxml(v))
@@ -1458,7 +1903,9 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
     """Complete 02-设计文档 fill, with image extraction from excel."""
     # Extract images via cellimages.xml for name-based matching (not positional)
     imgs = extract_images_via_cellimages(excel_path)
-    row_nums = set(rd["_row"] for rd in data_rows)
+    row_nums = set()
+    for rd in data_rows:
+        row_nums.update(rd.get("_row_numbers") or [rd["_row"]])
     img_cols = ["02-数据报表_设计文档-数据内容截图", "数据处理逻辑"]
     cell_imgs = match_images_to_cells(excel_path, imgs, img_cols, row_nums)
     print(f"匹配到 {len(cell_imgs)} 张图片")
@@ -1466,13 +1913,30 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
     if attachment_previews:
         print(f"附件截图: {len(attachment_previews)} 张")
 
+    deliverable_cols = excel_column_numbers(excel_path, ["交付物"]) or None
+    with tempfile.TemporaryDirectory(prefix="document_filler_indicator_attachments_") as temp_dir:
+        attachments = extract_deliverable_attachments(excel_path, row_nums, Path(temp_dir) / "attachments", deliverable_cols)
+        for rd in data_rows:
+            files = []
+            for row in rd.get("_row_numbers") or [rd["_row"]]:
+                files.extend(attachments.get(row, []))
+            rd["_attachment_names"] = collect_attachment_report_names(files)
+
+    def first_group_payload(mapping, rd, col_name=None):
+        for row in rd.get("_row_numbers") or [rd["_row"]]:
+            key = (row, col_name) if col_name else row
+            payload = mapping.get(key)
+            if payload:
+                return payload
+        return None
+
     for rd in data_rows:
         rd.update(normalize_data_report_text_fields(rd))
         rd["_img_content"] = (
-            cell_imgs.get((rd["_row"], "02-数据报表_设计文档-数据内容截图"))
-            or attachment_previews.get(rd["_row"])
+            first_group_payload(cell_imgs, rd, "02-数据报表_设计文档-数据内容截图")
+            or first_group_payload(attachment_previews, rd)
         )
-        rd["_img_logic"] = cell_imgs.get((rd["_row"], "数据处理逻辑"))
+        rd["_img_logic"] = first_group_payload(cell_imgs, rd, "数据处理逻辑")
         rd["_logic_is_img"] = "DISPIMG" in rd.get("数据处理逻辑", "")
 
     # Collect all directory codes
@@ -1558,7 +2022,7 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
             body.append(mp(rd.get("数据处理逻辑", ""), S["BT"], 480))
 
         body.append(mp("报表指标设计", S["H3"]))
-        body.append(mk_indicator_table())
+        body.append(mk_indicator_table(build_data_report_indicator_rows(rd.get("_programs", []), rd.get("_attachment_names", []))))
 
     # Insert images
     h3s = [(i, p) for i, p in enumerate(doc.paragraphs) if p.style.name == "Heading 3"]
@@ -1704,18 +2168,26 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
     print(f"构建 {len(data_rows)} 个工单章节...")
     for rd in data_rows:
         gd = rd.get("工单内容", "")
+        launch_cols = launch_image_columns_for_row(rd, cell_imgs, ["上线交付截图1", "上线交付截图2"])
+        usage_cols = launch_image_columns_for_row(rd, cell_imgs, ["使用记录截图1", "使用记录截图2"])
         body.append(mp(f"{gd}的上线记录", S["Heading 1"]))
         body.append(mp("产出说明", S["Heading 2"]))
         body.append(mp(build_launch_identifier_line(rd), S["Body Text"], 480, word_wrap=True))
-        body.append(mp(f"需求描述：{rd.get('需求描述', '')}", S["Body Text"], 480))
+        body.append(mp(f"需求描述：{build_launch_requirement_description(rd)}", S["Body Text"], 480))
         body.append(mp(f"统计报表：{rd.get('报表统计次数', '')}次。", S["Normal"], 480, word_wrap=True))
         body.append(mp("上线交付截图", S["Heading 2"]))
-        body.append(mp("", S["Body Text"]))
-        body.append(mp("", S["Body Text"]))
+        if launch_cols:
+            for _ in launch_cols:
+                body.append(mp("", S["Body Text"]))
+        else:
+            body.append(mp("截图待补充。", S["Body Text"], 480))
         body.append(mp("使用记录", S["Heading 2"]))
         body.append(mp("使用记录如下：", S["Body Text"]))
-        body.append(mp("", S["Body Text"]))
-        body.append(mp("", S["Body Text"]))
+        if usage_cols:
+            for _ in usage_cols:
+                body.append(mp("", S["Body Text"]))
+        else:
+            body.append(mp("截图待补充。", S["Body Text"], 480))
 
     doc.save(output_path)
 
@@ -1728,24 +2200,30 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
         if p.text.strip() == "上线交付截图":
             if gi < len(data_rows):
                 rn = data_rows[gi]["_row"]
-                for o, cn in enumerate(["上线交付截图1", "上线交付截图2"]):
+                for o, cn in enumerate(launch_image_columns_for_row(data_rows[gi], cell_imgs, ["上线交付截图1", "上线交付截图2"])):
                     tpi = pi + 1 + o
                     if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
                         tp = doc2.paragraphs[tpi]
+                        image_payload = image_bytes_for_docx(cell_imgs[(rn, cn)])
+                        if not image_payload:
+                            continue
                         tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        tf.write(cell_imgs[(rn, cn)])
+                        tf.write(image_payload)
                         tf.close()
                         tp.add_run().add_picture(tf.name, width=Inches(5.5))
                         os.unlink(tf.name)
         elif p.text.strip() == "使用记录":
             if gi < len(data_rows):
                 rn = data_rows[gi]["_row"]
-                for o, cn in enumerate(["使用记录截图1", "使用记录截图2"]):
+                for o, cn in enumerate(launch_image_columns_for_row(data_rows[gi], cell_imgs, ["使用记录截图1", "使用记录截图2"])):
                     tpi = pi + 2 + o
                     if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
                         tp = doc2.paragraphs[tpi]
+                        image_payload = image_bytes_for_docx(cell_imgs[(rn, cn)])
+                        if not image_payload:
+                            continue
                         tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        tf.write(cell_imgs[(rn, cn)])
+                        tf.write(image_payload)
                         tf.close()
                         tp.add_run().add_picture(tf.name, width=Inches(5.5))
                         os.unlink(tf.name)
@@ -2356,7 +2834,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         data_rows = read_excel(excel_path, service_dir)
         return fill_requirement_doc(data_rows, template_path, output_path)
     elif material_type == "02-数据报表_设计文档":
-        data_rows = read_excel(excel_path, service_dir)
+        data_rows = read_data_report_design_groups(excel_path, service_dir)
         if not catalog_path:
             raise ValueError("02-设计文档需要 --catalog 参数指定数据目录数据路径")
         if not os.path.exists(catalog_path):
