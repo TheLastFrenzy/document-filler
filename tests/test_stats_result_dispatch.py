@@ -37,6 +37,62 @@ def make_ledger(path: Path):
     wb.save(path)
 
 
+def make_result_template(path: Path):
+    wb = openpyxl.Workbook()
+    wb.active.title = "说明"
+    wb.create_sheet("1、数据源表list")
+    wb.create_sheet("2、表融合关系")
+    wb.create_sheet("3、数据统计分析结果表list")
+    wb.create_sheet("4、数据统计分析结果表详情")
+    wb.save(path)
+
+
+def make_records_with_flowcharts(temp: Path):
+    flowcharts = []
+    for index in range(1, 3):
+        image_path = temp / f"flowchart-{index}.png"
+        Image.new("RGB", (16, 16), "white").save(image_path)
+        flowcharts.append(image_path)
+    return [
+        {
+            "result_cn": "结果表一",
+            "result_en": "RESULT_ONE",
+            "sources": ["SRC_ONE"],
+            "logic_steps": ["读取源表一", "写入结果表一"],
+            "flowchart": str(flowcharts[0]),
+            "fields": [
+                {
+                    "字段中文名": "字段一",
+                    "字段英文名": "FIELD_ONE",
+                    "字段类型": "VARCHAR2(20)",
+                    "默认": "",
+                    "不可为空": "No",
+                    "唯一": "No",
+                    "字段注释": "字段说明",
+                }
+            ],
+        },
+        {
+            "result_cn": "结果表二",
+            "result_en": "RESULT_TWO",
+            "sources": ["SRC_TWO"],
+            "logic_steps": ["读取源表二", "写入结果表二"],
+            "flowchart": str(flowcharts[1]),
+            "fields": [
+                {
+                    "字段中文名": "字段二",
+                    "字段英文名": "FIELD_TWO",
+                    "字段类型": "NUMBER(10)",
+                    "默认": "",
+                    "不可为空": "No",
+                    "唯一": "No",
+                    "字段注释": "字段说明",
+                }
+            ],
+        },
+    ]
+
+
 class StatsResultDispatchTest(unittest.TestCase):
     def test_dispatches_to_stats_result_workbook_builder(self):
         module = load_fill_document_module()
@@ -127,6 +183,45 @@ class StatsResultDispatchTest(unittest.TestCase):
                 )
 
             self.assertEqual(line_pixels, 0)
+
+    def test_result_workbook_applies_songti_gray_fill_defaults_and_relation_spacing(self):
+        module = load_builder_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template = temp / "template.xlsx"
+            output = temp / "out.xlsx"
+            make_result_template(template)
+            records = make_records_with_flowcharts(temp)
+            resource_info = {
+                "SRC_ONE": {"数据目录代码": "DIR-SRC-1", "资源名称": "源表一", "单位名称": "原始单位一", "资源类型": "原始类型一"},
+                "SRC_TWO": {"数据目录代码": "DIR-SRC-2", "资源名称": "源表二", "单位名称": "原始单位二", "资源类型": "原始类型二"},
+                "RESULT_ONE": {"资源名称": "结果表一"},
+                "RESULT_TWO": {"资源名称": "结果表二"},
+            }
+
+            module.build_workbook(template, output, records, resource_info)
+
+            wb = openpyxl.load_workbook(output)
+            source_list = wb["1、数据源表list"]
+            relation = wb["2、表融合关系"]
+
+            self.assertEqual(source_list["D2"].value, "上海市大数据中心")
+            self.assertEqual(source_list["E2"].value, "库表")
+            self.assertEqual(source_list["D3"].value, "上海市大数据中心")
+            self.assertEqual(source_list["E3"].value, "库表")
+            self.assertIsNone(relation["A4"].value)
+            self.assertEqual(relation.row_dimensions[4].height, 20)
+            self.assertEqual(relation["A5"].value, "2.2 RESULT_TWO")
+
+            for worksheet in wb.worksheets:
+                for row in worksheet.iter_rows():
+                    for cell in row:
+                        if cell.value not in (None, ""):
+                            self.assertEqual(cell.font.name, "宋体")
+
+            for cell in [source_list["A1"], relation["A1"], relation["B2"], wb["3、数据统计分析结果表list"]["A1"], wb["4、数据统计分析结果表详情"]["A1"]]:
+                self.assertEqual(cell.fill.fgColor.rgb, "00F2F2F2")
+            wb.close()
 
 
 if __name__ == "__main__":

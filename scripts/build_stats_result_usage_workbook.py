@@ -35,6 +35,11 @@ SHEET_RESULT_DETAIL = "4、数据统计分析结果表详情"
 NS_MAIN = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 NS_REL = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
 
+DEFAULT_FONT_NAME = "宋体"
+DEFAULT_HIGHLIGHT_FILL = "F2F2F2"
+DEFAULT_DATA_PROVIDER = "上海市大数据中心"
+DEFAULT_RESOURCE_TYPE = "库表"
+
 
 def norm_name(value: object) -> str:
     text = str(value or "").strip().strip("`\"[];").upper()
@@ -609,10 +614,10 @@ def set_widths(ws, widths: list[float]) -> None:
 
 
 def add_header_row(ws, headers: list[str], row: int = 1) -> None:
-    fill = PatternFill("solid", fgColor="D9EAF7")
+    fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row, col, header)
-        cell.font = Font(name="等线", size=11, bold=True)
+        cell.font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
         cell.fill = fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     style_range(ws, row, row, 1, len(headers))
@@ -869,8 +874,8 @@ def fill_source_list(ws, records: list[dict], resource_info: dict[str, dict]) ->
                     len(rows) + 1,
                     info.get("数据目录代码", ""),
                     info.get("资源名称", ""),
-                    info.get("单位名称", ""),
-                    info.get("资源类型", ""),
+                    DEFAULT_DATA_PROVIDER,
+                    DEFAULT_RESOURCE_TYPE,
                     source,
                     record["result_en"],
                 ]
@@ -889,8 +894,8 @@ def fill_relation(ws, records: list[dict]) -> None:
     for idx, record in enumerate(records, start=1):
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
         title = ws.cell(row, 1, f"2.{idx} {record['result_en']}")
-        title.font = Font(name="等线", size=12, bold=True)
-        title.fill = PatternFill("solid", fgColor="D9EAF7")
+        title.font = Font(name=DEFAULT_FONT_NAME, size=12, bold=True)
+        title.fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         title.alignment = Alignment(horizontal="left", vertical="center")
         style_range(ws, row, row, 1, 3)
 
@@ -907,11 +912,13 @@ def fill_relation(ws, records: list[dict]) -> None:
         ws.row_dimensions[row + 1].height = max(80, min(220, 28 * len(record["logic_steps"])))
         ws.row_dimensions[row + 2].height = 500
         for rr in (row + 1, row + 2):
-            ws.cell(rr, 2).font = Font(name="等线", size=11, bold=True)
-            ws.cell(rr, 2).fill = PatternFill("solid", fgColor="F2F2F2")
+            ws.cell(rr, 2).font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
+            ws.cell(rr, 2).fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         style_range(ws, row + 1, row + 2, 1, 3)
         ws.cell(row + 1, 3).alignment = Alignment(vertical="top", wrap_text=True)
-        row += 3
+        if idx < len(records):
+            ws.row_dimensions[row + 3].height = 20
+        row += 4 if idx < len(records) else 3
     set_widths(ws, [6, 20, 120])
     setup_common_ws(ws)
 
@@ -942,21 +949,21 @@ def fill_result_detail(ws, records: list[dict]) -> None:
     for idx, record in enumerate(records, start=1):
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
         cell = ws.cell(row, 1, f"4.{idx} {record['result_cn']}")
-        cell.font = Font(name="等线", size=12, bold=True)
-        cell.fill = PatternFill("solid", fgColor="D9EAF7")
+        cell.font = Font(name=DEFAULT_FONT_NAME, size=12, bold=True)
+        cell.fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         cell.alignment = Alignment(horizontal="left", vertical="center")
         style_range(ws, row, row, 1, 8)
 
         ws.merge_cells(start_row=row + 1, start_column=2, end_row=row + 1, end_column=8)
         ws.cell(row + 1, 2, record["result_en"])
         ws.cell(row + 1, 2).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row + 1, 2).font = Font(name="等线", size=11, bold=True)
+        ws.cell(row + 1, 2).font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
         style_range(ws, row + 1, row + 1, 1, 8)
 
         for c_idx, header in enumerate(headers, start=1):
             c = ws.cell(row + 2, c_idx, header)
-            c.font = Font(name="等线", size=11, bold=True)
-            c.fill = PatternFill("solid", fgColor="F2F2F2")
+            c.font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
+            c.fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         style_range(ws, row + 2, row + 2, 1, 8)
 
@@ -1003,9 +1010,9 @@ def build_workbook(template_path: Path, output_path: Path, records: list[dict], 
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for cell in row:
-                cell.font = copy(cell.font)
-                if not cell.font.name:
-                    cell.font = Font(name="等线", size=11, bold=cell.font.bold)
+                font = copy(cell.font)
+                font.name = DEFAULT_FONT_NAME
+                cell.font = font
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
 

@@ -6,6 +6,7 @@ from unittest import mock
 
 import openpyxl
 from docx import Document
+from docx.oxml.ns import qn
 from openpyxl.drawing.image import Image as XLImage
 
 
@@ -295,6 +296,51 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertNotIn("旧内容", full_text)
             self.assertEqual(len([p for p in doc.paragraphs if p.style.name == "Heading 2" and p.text.startswith("结果表")]), 3)
             self.assertGreaterEqual(len(doc.tables), 10)
+
+    def test_stats_design_entity_table_gives_directory_name_more_width(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "02-数据统计分析_设计文档.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_split_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook(relation)
+            make_catalog(catalog)
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            doc = Document(output)
+            entity_table = next(
+                table for table in doc.tables
+                if table.rows[0].cells[2].text == "数据目录中文名称（目录名）"
+            )
+            grid_cols = entity_table._tbl.tblGrid.findall(qn("w:gridCol"))
+            widths = [int(col.get(qn("w:w"))) for col in grid_cols]
+            layout = entity_table._tbl.tblPr.find(qn("w:tblLayout"))
+            cell_widths = []
+            for cell in entity_table.rows[0].cells:
+                tcw = cell._tc.tcPr.tcW if cell._tc.tcPr is not None else None
+                self.assertIsNotNone(tcw)
+                cell_widths.append(int(tcw.get(qn("w:w"))))
+
+            self.assertGreaterEqual(widths[2], 3300)
+            self.assertGreater(widths[2], widths[3])
+            self.assertIsNotNone(layout)
+            self.assertEqual(layout.get(qn("w:type")), "fixed")
+            self.assertEqual(cell_widths[2], widths[2])
+            self.assertEqual(cell_widths[3], widths[3])
 
     def test_stats_design_result_structure_uses_nullable_and_unique_values_from_usage_workbook(self):
         module = load_fill_document_module()

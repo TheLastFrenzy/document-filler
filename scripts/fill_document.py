@@ -654,9 +654,14 @@ def build_attachment_previews(excel_path, row_numbers):
 def build_launch_identifier_line(row):
     return f"需求编号：{row.get('需求单号', '')}\t对应工单编号：{row.get('工单号', '')}"
 
-def make_cell_oxml(text, grid_span=None, bold=False, bg=None, align=None):
+def make_cell_oxml(text, grid_span=None, bold=False, bg=None, align=None, width=None):
     tc = OxmlElement("w:tc")
     tcPr = OxmlElement("w:tcPr")
+    if width:
+        tcw = OxmlElement("w:tcW")
+        tcw.set(qn("w:w"), str(width))
+        tcw.set(qn("w:type"), "dxa")
+        tcPr.append(tcw)
     if grid_span:
         gs = OxmlElement("w:gridSpan")
         gs.set(qn("w:val"), str(grid_span))
@@ -698,6 +703,9 @@ def make_table_oxml(headers, rows_data, col_widths=None):
     tw.set(qn("w:w"), "5000")
     tw.set(qn("w:type"), "pct")
     tp.append(tw)
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tp.append(layout)
     add_solid_borders(tp)
     tbl.append(tp)
     ncols = len(headers)
@@ -710,13 +718,14 @@ def make_table_oxml(headers, rows_data, col_widths=None):
         tg.append(gc)
     tbl.append(tg)
     hdr = OxmlElement("w:tr")
-    for h in headers:
-        hdr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG))
+    for idx, h in enumerate(headers):
+        hdr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG, width=col_widths[idx]))
     tbl.append(hdr)
     for rd in rows_data:
         tr = OxmlElement("w:tr")
-        for val in rd:
-            tr.append(make_cell_oxml(val))
+        for idx, val in enumerate(rd):
+            width = col_widths[idx] if idx < len(col_widths) else None
+            tr.append(make_cell_oxml(val, width=width))
         tbl.append(tr)
     return tbl
 
@@ -2247,7 +2256,7 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
         append_body_element(body, make_table_oxml(
             ["序号", "数据目录/编码（如有）", "数据目录中文名称（目录名）", "表名", "表类型", "数据更新周期"],
             entity_rows,
-            ["550", "1600", "2600", "2800", "900", "1300"],
+            ["500", "1350", "3400", "2450", "800", "1250"],
         ))
 
         append_body_element(body, mp("数据统计分析设计", style["H3"]))
