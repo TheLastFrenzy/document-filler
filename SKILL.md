@@ -84,7 +84,7 @@ description: >
 | **台账清单路径** | 台账清单 Excel 文件完整路径 | 全部 |
 | **模板文件路径** | Word 模板(.docx)、PDF 模板(.pdf) 或 Excel 模板(.xlsx) 完整路径 | 全部 |
 | **输出文件路径** | 生成的 Word、PDF 或 Excel 说明材料保存路径；用户给文件夹时按材料类型生成文件名 | 全部 |
-| **数据目录数据路径** | 数据目录数据 Excel 文件路径 | 02、04 |
+| **数据目录数据路径** | 数据目录数据 Excel 文件路径；01-数据报表需求文档中为可选增强参数，用于生成更具体的数据需求和交付要求 | 01可选、02、04 |
 
 ## 执行流程
 
@@ -108,11 +108,13 @@ python -m pip install -r requirements.txt
 
 ```bash
 # 01-需求文档
+# --catalog 可选；提供后会用资源名称和字段详情增强数据需求/交付要求
 python scripts/fill_document.py \
   --service-dir "N08-数据报表服务" \
   --material-type "01-数据报表_需求文档" \
   --excel "台账清单路径.xlsx" \
   --template "模板文件路径.docx" \
+  --catalog "数据目录数据路径.xlsx" \
   --output "输出文件路径.docx"
 
 # 01-数据统计分析_需求文档

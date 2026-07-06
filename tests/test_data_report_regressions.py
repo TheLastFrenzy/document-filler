@@ -48,13 +48,251 @@ class DataReportRegressionTest(unittest.TestCase):
             "业务说明": "根据附件梳理字段名称、数据类型、空值数等内容。",
         }
 
-        normalized = module.normalize_data_report_text_fields(row)
+        catalog_context = {
+            "002420412/000269": {
+                "资源名称": "重点人员资格表",
+                "资源编码": "T_KEY_PERSON",
+                "字段": ["姓名", "证件号码", "人员状态"],
+            },
+            "002420412/000114": {
+                "资源名称": "服务机构信息表",
+                "资源编码": "T_ORG_INFO",
+                "字段": ["机构名称", "所属街镇"],
+            },
+        }
+
+        normalized = module.normalize_data_report_text_fields(row, catalog_context)
 
         self.assertIn("002420412/000269、002420412/000114等目录", normalized["数据需求"])
         for banned in ["检查", "抽查", "复核"]:
             self.assertNotIn(banned, normalized["交付要求"])
         self.assertNotIn("929945317274169", normalized["交付要求"])
         self.assertFalse(any(mark in normalized["交付要求"] for mark in "【】[]"))
+
+    def test_requirement_text_uses_catalog_fields_program_fields_and_report_names(self):
+        module = load_fill_document_module()
+        row = {
+            "数据需求": "",
+            "交付要求": "",
+            CATALOG_COL: "DIR001/000001\nDIR001/000002",
+            "工单内容": "便捷共享目录信息统计",
+            "业务说明": (
+                "根据附件统计目录共享情况。本次工作拟产出以下2份报表成果：\n"
+                "便捷共享目录信息表\n目录字段空值统计表"
+            ),
+            "_programs": [
+                {
+                    "program_cn": "目录字段空值统计",
+                    "program_en": "BGT_DIR_FIELD_NULL",
+                    "field_comments": ["目录代码", "目录名称", "空值数"],
+                }
+            ],
+            "_attachment_names": ["便捷共享目录信息表.xlsx"],
+        }
+        catalog_context = {
+            "DIR001/000001": {
+                "资源名称": "共享目录基本信息表",
+                "资源编码": "T_DIR_INFO",
+                "字段": ["目录代码", "目录名称", "提供方名称", "更新频率"],
+            },
+            "DIR001/000002": {
+                "资源名称": "目录字段明细表",
+                "资源编码": "T_DIR_FIELD",
+                "字段": ["字段中文名", "字段英文名", "空值数"],
+            },
+        }
+
+        normalized = module.normalize_data_report_text_fields(row, catalog_context)
+
+        self.assertIn("共享目录基本信息表", normalized["数据需求"])
+        self.assertIn("目录字段明细表", normalized["数据需求"])
+        self.assertIn("目录代码、目录名称、提供方名称", normalized["数据需求"])
+        self.assertIn("便捷共享目录信息表", normalized["数据需求"])
+        self.assertIn("字段中文名", normalized["交付要求"])
+        self.assertIn("目录字段空值统计", normalized["交付要求"])
+        self.assertIn("可追溯", normalized["交付要求"])
+        self.assertNotEqual(
+            normalized["数据需求"],
+            "本次需求围绕DIR001/000001、DIR001/000002目录开展统计整理，结合便捷共享目录信息统计确认字段口径、统计范围和结果呈现内容。",
+        )
+
+    def test_requirement_document_dispatch_builds_catalog_context_when_catalog_is_supplied(self):
+        module = load_fill_document_module()
+        rows = [{"工单内容": "目录统计"}]
+        context = {"DIR001/000001": {"资源名称": "共享目录基本信息表"}}
+
+        with mock.patch.object(module, "read_excel", return_value=rows) as read_excel:
+            with mock.patch.object(module, "build_data_report_catalog_context", return_value=context) as build_context:
+                with mock.patch.object(module, "fill_requirement_doc", return_value="out.docx") as fill_requirement:
+                    result = module.fill_document(
+                        excel_path="ledger.xlsx",
+                        service_dir="N08-数据报表服务",
+                        material_type="01-数据报表_需求文档",
+                        template_path="template.docx",
+                        output_path="out.docx",
+                        catalog_path="catalog.xlsx",
+                    )
+
+        self.assertEqual(result, "out.docx")
+        read_excel.assert_called_once_with("ledger.xlsx", "N08-数据报表服务")
+        build_context.assert_called_once_with("catalog.xlsx", rows)
+        fill_requirement.assert_called_once_with(rows, "template.docx", "out.docx", catalog_context=context)
+
+    def test_requirement_report_names_detect_marker_without_yixia(self):
+        module = load_fill_document_module()
+
+        text = module.report_names_from_business_text(
+            {
+                "业务说明": "根据附件统计目录共享情况。本次工作拟产出2份报表成果：\n目录共享表\n空值统计表",
+            }
+        )
+
+        self.assertIn("目录共享表", text)
+        self.assertIn("空值统计表", text)
+
+    def test_requirement_report_names_fall_back_to_result_program_list(self):
+        module = load_fill_document_module()
+
+        text = module.report_names_from_business_text(
+            {
+                "业务说明": "根据附件统计目录共享情况。",
+                "统计分析结果表清单": "目录字段空值统计 BGT_DIR_FIELD_NULL",
+            }
+        )
+
+        self.assertIn("目录字段空值统计", text)
+        self.assertNotEqual(text, "报表成果")
+
+    def test_requirement_and_delivery_endings_vary_and_delivery_names_output_formats(self):
+        module = load_fill_document_module()
+        catalog_context = {
+            "DIR001/000001": {
+                "资源名称": "共享目录基本信息表",
+                "资源编码": "T_DIR_INFO",
+                "字段": ["目录代码", "目录名称", "提供方名称", "更新频率"],
+            },
+            "DIR001/000002": {
+                "资源名称": "目录字段明细表",
+                "资源编码": "T_DIR_FIELD",
+                "字段": ["字段中文名", "字段英文名", "空值数"],
+            },
+        }
+        rows = [
+            {
+                "工单内容": "便捷共享目录信息统计",
+                "业务说明": "根据附件统计目录共享情况。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "目录共享表 BGT_DIR_SHARE",
+                "_attachment_names": ["目录共享表.xlsx"],
+            },
+            {
+                "工单内容": "下发量统计指标逻辑变更",
+                "业务说明": "根据附件调整下发量统计口径。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "下发量统计表 BGT_SEND_COUNT",
+                "_attachment_names": ["下发量统计表.xlsx", "口径说明.docx"],
+            },
+            {
+                "工单内容": "接口调用风险明细统计",
+                "业务说明": "根据附件梳理接口调用异常明细。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "接口风险明细表 BGT_API_RISK",
+            },
+        ]
+
+        normalized = [module.normalize_data_report_text_fields(row, catalog_context) for row in rows]
+        requirement_endings = {module.final_cn_sentence(item["数据需求"]) for item in normalized}
+        delivery_endings = {module.final_cn_sentence(item["交付要求"]) for item in normalized}
+
+        self.assertGreater(len(requirement_endings), 1)
+        self.assertGreater(len(delivery_endings), 1)
+        self.assertIn("Excel电子表格报表", normalized[0]["交付要求"])
+        self.assertNotIn("Word文档说明材料", normalized[0]["交付要求"])
+        self.assertIn("Excel电子表格报表", normalized[1]["交付要求"])
+        self.assertIn("Word文档说明材料", normalized[1]["交付要求"])
+        self.assertNotIn("Excel电子表格报表", normalized[2]["交付要求"])
+        self.assertNotIn("Word文档说明材料", normalized[2]["交付要求"])
+        for item in normalized:
+            delivery = item["交付要求"]
+            self.assertNotIn("交付物后缀显示", delivery)
+            self.assertNotIn("格式提交", delivery)
+            self.assertIn("命名", delivery)
+            self.assertIn("统计时间段", delivery)
+
+    def test_delivery_format_wording_uses_actual_attachment_suffixes_only(self):
+        module = load_fill_document_module()
+        base_row = {
+            "工单内容": "接口调用风险明细统计",
+            "业务说明": "根据附件梳理接口调用异常明细。",
+            CATALOG_COL: "DIR001/000001",
+        }
+
+        excel_row = dict(base_row, _attachment_names=["接口风险明细表.xlsx"])
+        mixed_row = dict(base_row, _attachment_names=["接口风险明细表.xlsx", "分析说明.docx"])
+        pdf_row = dict(base_row, 交付物="接口风险处置清单.pdf")
+        no_suffix_row = dict(base_row)
+
+        excel_delivery = module.normalize_data_report_text_fields(excel_row)["交付要求"]
+        mixed_delivery = module.normalize_data_report_text_fields(mixed_row)["交付要求"]
+        pdf_delivery = module.normalize_data_report_text_fields(pdf_row)["交付要求"]
+        no_suffix_delivery = module.normalize_data_report_text_fields(no_suffix_row)["交付要求"]
+
+        self.assertIn("Excel电子表格报表", excel_delivery)
+        self.assertNotIn("Word文档说明材料", excel_delivery)
+        self.assertNotIn("PDF版定稿或签收材料", excel_delivery)
+        self.assertIn("Excel电子表格报表", mixed_delivery)
+        self.assertIn("Word文档说明材料", mixed_delivery)
+        self.assertIn("PDF版定稿或签收材料", pdf_delivery)
+        self.assertNotIn("Excel电子表格报表", no_suffix_delivery)
+        self.assertNotIn("Word文档说明材料", no_suffix_delivery)
+        self.assertIn("交付材料按实际附件内容整理", no_suffix_delivery)
+        for delivery in [excel_delivery, mixed_delivery, pdf_delivery, no_suffix_delivery]:
+            self.assertNotIn("交付物后缀显示", delivery)
+            self.assertNotIn("格式提交", delivery)
+
+    def test_delivery_format_ignores_generated_internal_zip_wrappers(self):
+        module = load_fill_document_module()
+        row = {
+            "工单内容": "涉企数据资源目录梳理",
+            "业务说明": "根据附件梳理涉企数据目录字段情况。",
+            CATALOG_COL: "DIR001/000001",
+            "_attachment_files": [Path("Workbook.xls"), Path("Workbook_embedded.zip")],
+        }
+
+        delivery = module.normalize_data_report_text_fields(row)["交付要求"]
+
+        self.assertIn("Excel电子表格报表", delivery)
+        self.assertNotIn("压缩包", delivery)
+
+    def test_requirement_document_dispatch_attaches_delivery_file_names_for_format_inference(self):
+        module = load_fill_document_module()
+        rows = [{"_row": 2, "工单内容": "目录统计"}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "ledger.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["服务目录", "交付物"])
+            ws.append(["N08-数据报表服务", ""])
+            wb.save(ledger)
+
+            attachments = {2: [Path("目录共享表.xlsx"), Path("口径说明.docx")]}
+            with mock.patch.object(module, "read_excel", return_value=rows):
+                with mock.patch.object(module, "extract_deliverable_attachments", return_value=attachments) as extract:
+                    with mock.patch.object(module, "fill_requirement_doc", return_value="out.docx") as fill_requirement:
+                        result = module.fill_document(
+                            excel_path=str(ledger),
+                            service_dir="N08-数据报表服务",
+                            material_type="01-数据报表_需求文档",
+                            template_path="template.docx",
+                            output_path="out.docx",
+                        )
+
+        self.assertEqual(result, "out.docx")
+        extract.assert_called_once()
+        passed_rows = fill_requirement.call_args.args[0]
+        self.assertEqual(passed_rows[0]["_attachment_files"], attachments[2])
+        self.assertEqual(passed_rows[0]["_attachment_names"], ["目录共享表.xlsx", "口径说明.docx"])
 
     def test_select_excel_preview_range_prefers_richer_sheet_and_caps_wide_ranges(self):
         module = load_fill_document_module()
@@ -345,15 +583,104 @@ class DataReportRegressionTest(unittest.TestCase):
             "_attachment_names": ["重点人员明细.xlsx"],
         }
 
-        normalized = module.normalize_data_report_text_fields(row)
+        catalog_context = {
+            "002420412/000269": {
+                "资源名称": "重点人员资格表",
+                "资源编码": "T_KEY_PERSON",
+                "字段": ["姓名", "证件号码", "人员状态"],
+            },
+            "002420412/000114": {
+                "资源名称": "服务机构信息表",
+                "资源编码": "T_ORG_INFO",
+                "字段": ["机构名称", "所属街镇"],
+            },
+        }
+
+        normalized = module.normalize_data_report_text_fields(row, catalog_context)
 
         for key in ("内容描述", "业务场景", "结果形式", "数据处理逻辑"):
             self.assertTrue(module.compact_spaces(normalized.get(key)), key)
         self.assertIn("重点人员", normalized["内容描述"])
         self.assertIn("重点人员", normalized["业务场景"])
+        self.assertIn("重点人员资格表", normalized["数据内容"])
+        self.assertIn("姓名", normalized["数据内容"])
         self.assertIn("重点人员明细", normalized["结果形式"])
         self.assertIn("002420412/000269", normalized["数据处理逻辑"])
         self.assertIn("姓名", normalized["数据处理逻辑"])
+        for text in (normalized["业务场景"], normalized["数据内容"]):
+            for banned in ("本节", "附件中可见", "上线后用于", "展示附件", "统计结果查看、业务核验和材料归档"):
+                self.assertNotIn(banned, text)
+
+    def test_design_business_scene_and_data_content_are_not_fixed_template_sentences(self):
+        module = load_fill_document_module()
+        catalog_context = {
+            "DIR001/000001": {
+                "资源名称": "共享目录基本信息表",
+                "资源编码": "T_DIR_INFO",
+                "字段": ["目录代码", "目录名称", "下发量"],
+            },
+            "DIR001/000002": {
+                "资源名称": "目录字段明细表",
+                "资源编码": "T_DIR_FIELD",
+                "字段": ["字段中文名", "字段英文名", "空值数"],
+            },
+        }
+        rows = [
+            {
+                "工单内容": "便捷共享目录信息统计",
+                "业务说明": "根据专题会议要求，编制便捷共享目录信息统计报表。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "目录共享表 BGT_DIR_SHARE",
+                "_attachment_names": ["目录共享表.xlsx"],
+            },
+            {
+                "工单内容": "涉企数据资源高价值目录梳理",
+                "业务说明": "对涉企数据资源进行高价值目录梳理，形成字段申请次数和属地字段情况统计。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "涉企目录字段统计 BGT_COMPANY_FIELD",
+                "_attachment_names": ["涉企目录字段统计.xls"],
+            },
+            {
+                "工单内容": "养老迁入迁出比对",
+                "业务说明": "比对养老迁入迁出人员情况，为民政养老业务提供核对清单。",
+                CATALOG_COL: "DIR001/000001\nDIR001/000002",
+                "统计分析结果表清单": "养老迁入迁出比对表 BGT_OLD_MIGRATE",
+                "_attachment_names": ["养老迁入迁出比对表.xlsx"],
+            },
+        ]
+
+        normalized = [module.normalize_data_report_text_fields(row, catalog_context) for row in rows]
+        business_scenes = [item["业务场景"] for item in normalized]
+        data_contents = [item["数据内容"] for item in normalized]
+
+        self.assertGreater(len({module.final_cn_sentence(text) for text in business_scenes}), 1)
+        self.assertGreater(len({module.final_cn_sentence(text) for text in data_contents}), 1)
+        for text in business_scenes + data_contents:
+            for banned in ("本节", "附件中可见", "上线后用于", "展示附件", "统计结果查看、业务核验和材料归档"):
+                self.assertNotIn(banned, text)
+        self.assertIn("共享目录基本信息表", data_contents[0])
+        self.assertIn("涉企数据资源", business_scenes[1])
+        self.assertIn("养老迁入迁出", business_scenes[2])
+
+    def test_design_business_scene_skips_long_list_like_source_fragments(self):
+        module = load_fill_document_module()
+        row = {
+            "工单内容": "民生社会事业报表梳理",
+            "业务说明": (
+                "根据市数据局要求，对民生、社会事业领域报表情况进行梳理，包括但不限于1、社会事业领域："
+                "区、下发部门、报表名称、报送层级、下发部门确认是否保留、报表链接、下发部门确认是否保留、\"系。"
+            ),
+            CATALOG_COL: "DIR001/000001",
+            "统计分析结果表清单": "民生报表梳理 BGT_LIVELIHOOD_REPORT",
+        }
+
+        normalized = module.normalize_data_report_text_fields(row)
+
+        self.assertIn("民生社会事业报表梳理", normalized["业务场景"])
+        self.assertIn("民生社会事业报表梳理", normalized["内容描述"])
+        for banned in ("包括但不限于1、", "报表链接", "\"系"):
+            self.assertNotIn(banned, normalized["业务场景"])
+            self.assertNotIn(banned, normalized["内容描述"])
 
     def test_launch_requirement_description_falls_back_to_new_ledger_business_fields(self):
         module = load_fill_document_module()

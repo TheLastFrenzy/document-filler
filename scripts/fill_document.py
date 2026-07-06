@@ -179,6 +179,24 @@ def unique_list(values, limit=None):
     return result
 
 
+def final_cn_sentence(text):
+    parts = [part.strip() for part in re.split(r"(?<=[。；;])\s*", str(text or "")) if part.strip()]
+    return parts[-1] if parts else ""
+
+
+def text_variant_index(row, catalog_codes, size, salt=""):
+    seed = "|".join(
+        [
+            str(row.get("工单号", "")),
+            str(row.get("工单内容", "")),
+            str(row.get("业务说明", ""))[:80],
+            "、".join(unique_list(catalog_codes, limit=5)),
+            salt,
+        ]
+    )
+    return sum(ord(ch) for ch in seed) % size if size else 0
+
+
 def extract_data_report_codes(text, include_plain_numbers=True, limit=None):
     patterns = [r"[A-Z0-9]{5,}/\d{6}", r"\b[A-Z]{1,4}\d{3,}/\d{6}\b"]
     if include_plain_numbers:
@@ -206,6 +224,216 @@ def infer_data_report_subject(row):
             sentence = re.sub(r"^根据[^，。；;]{0,40}[，,]", "", sentence)
             return sentence[:90]
     return "本次数据报表需求"
+
+
+def report_names_from_business_text(row, limit=3):
+    biz = str(row.get("业务说明", "") or "")
+    match = re.search(r"本次工作拟产出(?:以下)?\d+份报表成果", biz)
+    if match:
+        names = parse_report_names(biz[match.end():])
+        if names:
+            return display_name_list(names, "相关报表成果", limit=limit)
+    attachment_names = collect_attachment_report_names(row.get("_attachment_names") or [])
+    if attachment_names:
+        return display_name_list(attachment_names, "相关报表成果", limit=limit)
+    labels = []
+    for program in row.get("_programs") or []:
+        label = compact_spaces(program.get("program_cn", ""))
+        if label and label not in labels:
+            labels.append(label)
+    if labels:
+        return display_name_list(labels, "相关报表成果", limit=limit)
+    parsed_names = [cn or en for cn, en in parse_report_list(row.get("统计分析结果表清单", ""))]
+    if parsed_names:
+        return display_name_list(parsed_names, "相关报表成果", limit=limit)
+    return "报表成果"
+
+
+DELIVERY_SUFFIX_CATEGORY = {
+    ".xlsx": "excel",
+    ".xlsm": "excel",
+    ".xls": "excel",
+    ".csv": "excel",
+    ".docx": "word",
+    ".doc": "word",
+    ".pdf": "pdf",
+    ".zip": "archive",
+    ".rar": "archive",
+    ".7z": "archive",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".txt": "text",
+}
+
+
+def _delivery_attachment_values(row):
+    values = []
+    for key in ("_attachment_files", "_attachment_names"):
+        raw = row.get(key)
+        if isinstance(raw, (list, tuple, set)):
+            values.extend(str(item) for item in raw if item)
+        elif raw:
+            values.append(str(raw))
+    for key in ("交付物", "交付附件"):
+        raw = row.get(key)
+        if raw:
+            values.append(str(raw))
+    return values
+
+
+def _is_generated_internal_archive(value, suffix):
+    if suffix not in {".zip", ".rar", ".7z"}:
+        return False
+    stem = Path(str(value or "")).stem
+    generated_stems = {"Ole10Native_embedded", "Workbook_embedded", "Workbook", "package"}
+    return stem in generated_stems or bool(re.fullmatch(r"deliverable_row\d+", stem, flags=re.I))
+
+
+def delivery_attachment_suffixes(row):
+    suffixes = []
+    suffix_pattern = re.compile(r"\.(xlsx|xlsm|xls|csv|docx|doc|pdf|zip|rar|7z|png|jpe?g|txt)\b", re.I)
+    for value in _delivery_attachment_values(row):
+        suffix = Path(value).suffix.lower()
+        if suffix in DELIVERY_SUFFIX_CATEGORY and suffix not in suffixes and not _is_generated_internal_archive(value, suffix):
+            suffixes.append(suffix)
+        for match in suffix_pattern.finditer(value):
+            suffix = "." + match.group(1).lower()
+            if suffix in DELIVERY_SUFFIX_CATEGORY and suffix not in suffixes and not _is_generated_internal_archive(value, suffix):
+                suffixes.append(suffix)
+    return suffixes
+
+
+def delivery_format_categories(row):
+    categories = []
+    order = ["excel", "word", "pdf", "archive", "image", "text"]
+    for suffix in delivery_attachment_suffixes(row):
+        category = DELIVERY_SUFFIX_CATEGORY.get(suffix)
+        if category and category not in categories:
+            categories.append(category)
+    return [category for category in order if category in categories]
+
+
+def delivery_naming_sentence(row):
+    subject_text = "".join(str(row.get(key, "") or "") for key in ("工单内容", "业务说明", "交付物"))
+    if "接口" in subject_text:
+        naming_basis = "工单编号、接口编号、统计时间段和报表主题"
+    else:
+        naming_basis = "工单编号、统计时间段和报表主题"
+    return f"文件命名应对应{naming_basis}，保留可追溯线索。"
+
+
+def delivery_format_sentence(row):
+    categories = delivery_format_categories(row)
+    naming = delivery_naming_sentence(row)
+    if not categories:
+        return f"交付材料按实际附件内容整理，{naming}"
+    phrases = []
+    if "excel" in categories:
+        phrases.append("Excel电子表格报表")
+    if "word" in categories:
+        phrases.append("Word文档说明材料")
+    if "pdf" in categories:
+        phrases.append("PDF版定稿或签收材料")
+    if "archive" in categories:
+        phrases.append("保留原目录结构的压缩包附件")
+    if "image" in categories:
+        phrases.append("图片类截图或佐证材料")
+    if "text" in categories:
+        phrases.append("文本类补充清单")
+    return f"交付成果包括{'、'.join(phrases)}，{naming}"
+
+
+def catalog_resource_labels(catalog_codes, catalog_context=None, limit=3):
+    labels = []
+    catalog_context = catalog_context or {}
+    for code in unique_list(catalog_codes):
+        info = catalog_context.get(code, {})
+        name = compact_spaces(info.get("资源名称", ""))
+        label = f"{name}（{code}）" if name else code
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) >= limit:
+            break
+    if not labels:
+        return "相关数据目录"
+    suffix = "等目录" if len(unique_list(catalog_codes)) > len(labels) else "目录"
+    return "、".join(labels) + suffix
+
+
+def catalog_field_labels(catalog_codes, catalog_context=None, limit=6):
+    fields = []
+    catalog_context = catalog_context or {}
+    for code in unique_list(catalog_codes):
+        for field in catalog_context.get(code, {}).get("字段", []):
+            field = compact_spaces(field)
+            if field and field not in fields:
+                fields.append(field)
+            if len(fields) >= limit:
+                return fields
+    return fields
+
+
+def program_field_labels(row, limit=5):
+    fields = []
+    for program in row.get("_programs") or []:
+        field_comments = program.get("field_comments")
+        if field_comments is None and program.get("xml"):
+            try:
+                field_comments = extract_indicator_field_comments_from_program(program)
+            except Exception:
+                field_comments = []
+        for field in field_comments or []:
+            field = compact_spaces(field)
+            if field and field not in fields:
+                fields.append(field)
+            if len(fields) >= limit:
+                return fields
+    return fields
+
+
+def data_report_requirement_field_hint(row, catalog_codes, catalog_context=None, limit=6):
+    fields = []
+    for field in catalog_field_labels(catalog_codes, catalog_context, limit=limit):
+        if field not in fields:
+            fields.append(field)
+    for field in program_field_labels(row, limit=limit):
+        if field not in fields:
+            fields.append(field)
+        if len(fields) >= limit:
+            break
+    if fields:
+        return "、".join(fields[:limit])
+    return "目录代码、资源名称、统计结果"
+
+
+def build_data_report_catalog_context(catalog_path, data_rows):
+    if not catalog_path:
+        return {}
+    if not os.path.exists(catalog_path):
+        raise FileNotFoundError(f"数据目录数据文件不存在: {catalog_path}")
+    all_codes = []
+    for row in data_rows:
+        for code in extract_data_report_codes(row.get(DATA_REPORT_CATALOG_COL, ""), include_plain_numbers=False):
+            if code not in all_codes:
+                all_codes.append(code)
+    if not all_codes:
+        return {}
+    rmap, fmap = load_catalog_data(catalog_path, all_codes)
+    context = {}
+    for code in all_codes:
+        info = rmap.get(code, {})
+        fields = []
+        for item in fmap.get(code, []):
+            name = compact_spaces(item.get("数据项名称", ""))
+            if name and name not in fields:
+                fields.append(name)
+        context[code] = {
+            "资源名称": compact_spaces(info.get("资源名称", "")),
+            "资源编码": compact_spaces(info.get("资源编码", "")),
+            "字段": fields,
+        }
+    return context
 
 
 def _ensure_partial_catalog_mentions_use_etc(data_req, catalog_codes):
@@ -246,22 +474,43 @@ def _clean_delivery_text(delivery, catalog_codes):
     return text + "。" if text and not text.endswith(("。", "；", ";")) else text
 
 
-def infer_data_report_requirement(row, catalog_codes):
+def infer_data_report_requirement(row, catalog_codes, catalog_context=None):
     subject = infer_data_report_subject(row)
-    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
-    return f"本次需求围绕{code_hint}开展统计整理，结合{subject}确认字段口径、统计范围和结果呈现内容。"
+    resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
+    field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
+    report_hint = report_names_from_business_text(row, limit=3)
+    endings = [
+        "涉及多张目录的，报表中应保留目录代码和资源名称，后续核对口径时能直接追到来源。",
+        "同一报表跨目录取数时，应写清目录来源和字段口径，避免验收时只看到汇总值。",
+        "统计周期、筛选范围和更新时间要能在材料中找到依据，便于业务方复核。",
+        "对口径调整或字段缺失的情况，文档中应写明处理方式，避免后续重复确认。",
+    ]
+    ending = endings[text_variant_index(row, catalog_codes, len(endings), "requirement")]
+    return (
+        f"本次数据需求基于{resource_hint}，围绕{subject}业务场景，梳理{field_hint}等关键字段，"
+        f"明确统计范围和结果口径，形成{report_hint}。数据内容应覆盖资源名称、目录代码、字段列、"
+        f"统计结果和更新时间等可核验信息。{ending}"
+    )
 
 
-def infer_data_report_delivery(row, catalog_codes):
-    code_hint = join_catalog_codes(catalog_codes, "相关目录", limit=3)
+def infer_data_report_delivery(row, catalog_codes, catalog_context=None):
+    resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
+    field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
     subject = infer_data_report_subject(row)
-    return f"交付材料需保留{code_hint}对应的字段列、统计结果和口径说明，验收时以{subject}与业务说明的对应关系作为确认依据。"
-
-
-def infer_data_report_content(row, catalog_codes):
-    subject = infer_data_report_subject(row)
-    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
-    return f"本节围绕{code_hint}展开，结合{subject}中的统计对象和字段口径，展示附件中可见的清单、字段列和统计结果。"
+    report_hint = report_names_from_business_text(row, limit=3)
+    program_hint = data_report_program_labels(row, limit=3)
+    endings = [
+        "文件归档时按工单和报表主题归类，后续查找口径时不需要再反查原始附件。",
+        "材料提交后应能直接对应到工单、目录和报表成果，便于验收归档。",
+        "业务方拿到材料后可按统计周期继续更新，不需要重新整理目录来源。",
+        "涉及接口口径调整的，文件名和说明中应保留版本线索，便于后续管理。",
+    ]
+    ending = endings[text_variant_index(row, catalog_codes, len(endings), "delivery")]
+    return (
+        f"交付材料包括{report_hint}、涉及数据目录清单、字段口径说明和必要附件。{delivery_format_sentence(row)}"
+        f"验收时对照{resource_hint}中的{field_hint}等字段、{program_hint}处理结果与{subject}业务说明，确认统计范围、"
+        f"字段口径、结果呈现和附件内容一致。{ending}"
+    )
 
 
 def ensure_cn_period(text):
@@ -279,6 +528,52 @@ def first_sentence_from_fields(row, field_names, fallback="", limit=120):
         sentence = re.split(r"(?<=[。；;])\s*", value)[0]
         return sentence[:limit]
     return fallback
+
+
+def clean_design_basis_sentence(text):
+    text = compact_spaces(text)
+    if not text:
+        return ""
+    list_like_patterns = [r"包括但不限于\s*\d", r"报表链接", r'"系', r"下发部门确认是否保留"]
+    if any(re.search(pattern, text) for pattern in list_like_patterns) or text.count("、") >= 8:
+        return ""
+    text = re.sub(r"^根据附件[，,]?", "", text)
+    replacements = [
+        ("切实", ""),
+        ("精准、全面的", ""),
+        ("精准、全面", ""),
+        ("充分展现", "反映"),
+        ("现需", "需"),
+        ("并输出一次性报表", "形成一次性报表"),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    text = re.sub(r"为会议提供的数据支撑", "为会议提供数据支撑", text)
+    text = re.sub(r"\s+", "", text).strip("，,；; ")
+    return ensure_cn_period(text) if text else ""
+
+
+def data_report_business_focus(row):
+    text = "".join(
+        compact_spaces(row.get(key, ""))
+        for key in ("工单内容", "业务说明", "业务描述", "统计分析结果表清单")
+    )
+    focus_rules = [
+        ("工作汇报", "阶段性工作汇报材料整理"),
+        ("便捷共享", "便捷共享目录统计和会议材料准备"),
+        ("涉企", "涉企数据资源高价值目录梳理"),
+        ("婚介码", "婚介码服务目录信息核对"),
+        ("社会救助", "社会救助事项办理和人员信息比对"),
+        ("残疾人", "残疾人助学、个体工商户事项办理核对"),
+        ("特殊困难老人", "特殊困难老人关心关爱名单排查"),
+        ("低收入人口", "低收入人口动态监测"),
+        ("养老迁入迁出", "养老服务对象迁入迁出比对"),
+        ("下发量", "目录下发量口径调整和统计核验"),
+    ]
+    for keyword, focus in focus_rules:
+        if keyword in text:
+            return focus
+    return infer_data_report_subject(row)
 
 
 def display_name_list(values, fallback, limit=3):
@@ -340,19 +635,42 @@ def data_report_field_comment_hint(row, limit=4):
 def infer_data_report_content_description(row, catalog_codes):
     subject = infer_data_report_subject(row)
     code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
-    basis = first_sentence_from_fields(row, ("业务说明", "业务描述"), "")
+    basis = clean_design_basis_sentence(first_sentence_from_fields(row, ("业务说明", "业务描述"), ""))
     if basis:
         return ensure_cn_period(f"{basis}本工单围绕{code_hint}梳理{subject}涉及的统计口径、字段范围和交付附件")
     return ensure_cn_period(f"本工单围绕{subject}和{code_hint}梳理报表统计口径、字段范围和交付附件")
 
 
-def infer_data_report_business_scene(row, catalog_codes):
+def infer_data_report_business_scene(row, catalog_codes, catalog_context=None):
     subject = infer_data_report_subject(row)
-    scene = first_sentence_from_fields(row, ("业务描述", "业务说明"), "")
-    if scene and len(scene) >= 8:
-        return ensure_cn_period(f"{scene}上线后用于支撑{subject}相关统计结果查看、业务核验和材料归档")
-    code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
-    return ensure_cn_period(f"该报表服务用于支撑{subject}相关业务办理，按{code_hint}统一统计口径后提供给业务人员查看、核验和归档")
+    basis = clean_design_basis_sentence(first_sentence_from_fields(row, ("业务描述", "业务说明"), ""))
+    focus = data_report_business_focus(row)
+    resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=2)
+    variants = [
+        f"业务侧需要一份口径清楚的统计清单，用于{focus}，并能和{resource_hint}对应起来。",
+        f"{focus}需要把{resource_hint}中的关键数据放到同一套统计口径下，便于业务人员直接核对明细和汇总结果。",
+        f"该报表面向{focus}，重点解决{subject}中统计对象分散、字段口径不易对齐的问题。",
+        f"业务人员可直接看到{focus}涉及的对象范围、口径变化和结果差异，减少后续重复整理。",
+    ]
+    sentence = variants[text_variant_index(row, catalog_codes, len(variants), "design_scene")]
+    if basis:
+        return ensure_cn_period(basis + sentence)
+    return ensure_cn_period(sentence)
+
+
+def infer_data_report_content(row, catalog_codes, catalog_context=None):
+    subject = infer_data_report_subject(row)
+    resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
+    field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
+    report_hint = report_names_from_business_text(row, limit=2)
+    focus = data_report_business_focus(row)
+    variants = [
+        f"数据内容以{resource_hint}为主要来源，保留{field_hint}等字段，并按{focus}口径整理为{report_hint}。",
+        f"本工单取用{resource_hint}中的{field_hint}等信息，结果侧覆盖{report_hint}需要的明细、汇总值和更新时间。",
+        f"数据范围覆盖{resource_hint}中的{field_hint}等信息，统计结果需能对应{subject}的业务口径和{report_hint}的表内字段。",
+        f"设计时需把{resource_hint}、{field_hint}等字段和{focus}的统计口径放在同一条链路里，便于后续核对来源和结果。",
+    ]
+    return ensure_cn_period(variants[text_variant_index(row, catalog_codes, len(variants), "design_content")])
 
 
 def infer_data_report_result_form(row):
@@ -381,7 +699,7 @@ def _is_template_like(text):
     return not compact_spaces(value) or any(fragment in value for fragment in DATA_REPORT_TEMPLATE_FRAGMENTS)
 
 
-def normalize_data_report_text_fields(row):
+def normalize_data_report_text_fields(row, catalog_context=None):
     normalized = dict(row)
     catalog_codes = extract_data_report_codes(
         normalized.get(DATA_REPORT_CATALOG_COL, ""),
@@ -390,18 +708,18 @@ def normalize_data_report_text_fields(row):
 
     data_req = normalized.get("数据需求", "")
     if _is_template_like(data_req):
-        data_req = infer_data_report_requirement(normalized, catalog_codes)
+        data_req = infer_data_report_requirement(normalized, catalog_codes, catalog_context)
     data_req = _ensure_partial_catalog_mentions_use_etc(data_req, catalog_codes)
     normalized["数据需求"] = data_req
 
     delivery = normalized.get("交付要求", "")
     if _is_template_like(delivery):
-        delivery = infer_data_report_delivery(normalized, catalog_codes)
+        delivery = infer_data_report_delivery(normalized, catalog_codes, catalog_context)
     normalized["交付要求"] = _clean_delivery_text(delivery, catalog_codes)
 
     data_content = normalized.get("数据内容", "")
     if _is_template_like(data_content):
-        normalized["数据内容"] = infer_data_report_content(normalized, catalog_codes)
+        normalized["数据内容"] = infer_data_report_content(normalized, catalog_codes, catalog_context)
 
     content_desc = normalized.get("内容描述", "")
     if _is_template_like(content_desc):
@@ -409,7 +727,7 @@ def normalize_data_report_text_fields(row):
 
     business_scene = normalized.get("业务场景", "")
     if _is_template_like(business_scene):
-        normalized["业务场景"] = infer_data_report_business_scene(normalized, catalog_codes)
+        normalized["业务场景"] = infer_data_report_business_scene(normalized, catalog_codes, catalog_context)
 
     result_form = normalized.get("结果形式", "")
     if _is_template_like(result_form):
@@ -835,6 +1153,55 @@ def build_attachment_previews(excel_path, row_numbers):
             if payload:
                 previews[row] = payload
         return previews
+
+
+def attach_delivery_files_for_requirement(excel_path, data_rows):
+    if not data_rows or not os.path.exists(excel_path):
+        return data_rows
+    row_nums = set()
+    for rd in data_rows:
+        for row in rd.get("_row_numbers") or [rd.get("_row")]:
+            try:
+                row_nums.add(int(row))
+            except Exception:
+                continue
+    if not row_nums:
+        return data_rows
+    deliverable_cols = excel_column_numbers(excel_path, ["交付物"])
+    if not deliverable_cols:
+        return data_rows
+    with tempfile.TemporaryDirectory(prefix="document_filler_requirement_attachments_") as temp_dir:
+        attachments = extract_deliverable_attachments(
+            excel_path,
+            row_nums,
+            Path(temp_dir) / "attachments",
+            deliverable_cols,
+        )
+        for rd in data_rows:
+            files = []
+            for row in rd.get("_row_numbers") or [rd.get("_row")]:
+                try:
+                    files.extend(attachments.get(int(row), []))
+                except Exception:
+                    continue
+            if not files:
+                continue
+            existing_files = list(rd.get("_attachment_files") or [])
+            seen_files = {str(item) for item in existing_files}
+            for file in files:
+                if str(file) not in seen_files:
+                    existing_files.append(file)
+                    seen_files.add(str(file))
+            rd["_attachment_files"] = existing_files
+            existing_names = list(rd.get("_attachment_names") or [])
+            seen_names = {str(item) for item in existing_names}
+            for file in files:
+                name = Path(str(file)).name
+                if name and name not in seen_names:
+                    existing_names.append(name)
+                    seen_names.add(name)
+            rd["_attachment_names"] = existing_names
+    return data_rows
 
 
 def build_launch_identifier_line(row):
@@ -1384,7 +1751,7 @@ def make_stats_source_table(headers, rows_data):
         for v in rd: tr.append(make_cell_oxml(v))
         tbl.append(tr)
     return tbl
-def fill_requirement_doc(data_rows, template_path, output_path):
+def fill_requirement_doc(data_rows, template_path, output_path, catalog_context=None):
     """填充 01-数据报表_需求文档"""
     req_count, wo_count, total_reports = compute_stats(data_rows)
     print(f"结果: {len(data_rows)} 条, 需求单={req_count}, 工单={wo_count}, 报表={total_reports}")
@@ -1455,7 +1822,7 @@ def fill_requirement_doc(data_rows, template_path, output_path):
 
     new_elems = []
     for rd in data_rows:
-        rd = normalize_data_report_text_fields(rd)
+        rd = normalize_data_report_text_fields(rd, catalog_context)
         gongdan = rd["工单内容"]
         biz = rd["业务说明"]
         data_req = rd["数据需求"]
@@ -1922,6 +2289,8 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
                 files.extend(attachments.get(row, []))
             rd["_attachment_names"] = collect_attachment_report_names(files)
 
+    catalog_context = build_data_report_catalog_context(catalog_path, data_rows)
+
     def first_group_payload(mapping, rd, col_name=None):
         for row in rd.get("_row_numbers") or [rd["_row"]]:
             key = (row, col_name) if col_name else row
@@ -1931,7 +2300,7 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
         return None
 
     for rd in data_rows:
-        rd.update(normalize_data_report_text_fields(rd))
+        rd.update(normalize_data_report_text_fields(rd, catalog_context))
         rd["_img_content"] = (
             first_group_payload(cell_imgs, rd, "02-数据报表_设计文档-数据内容截图")
             or first_group_payload(attachment_previews, rd)
@@ -2832,7 +3201,9 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
 
     if material_type == "01-数据报表_需求文档":
         data_rows = read_excel(excel_path, service_dir)
-        return fill_requirement_doc(data_rows, template_path, output_path)
+        data_rows = attach_delivery_files_for_requirement(excel_path, data_rows)
+        catalog_context = build_data_report_catalog_context(catalog_path, data_rows) if catalog_path else {}
+        return fill_requirement_doc(data_rows, template_path, output_path, catalog_context=catalog_context)
     elif material_type == "02-数据报表_设计文档":
         data_rows = read_data_report_design_groups(excel_path, service_dir)
         if not catalog_path:
