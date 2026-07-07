@@ -950,20 +950,22 @@ def fill_relation(ws, records: list[dict]) -> None:
 
 def fill_result_list(ws, records: list[dict], resource_info: dict[str, dict]) -> None:
     clear_sheet(ws)
-    headers = ["资源名称", "数据提供方", "资源类型", "数据统计分析表的资源信息（表名）"]
+    headers = ["序号", "资源编目（非必填）", "资源名称", "数据提供方", "资源类型", "数据统计分析表的资源信息（表名）"]
     add_header_row(ws, headers)
     for r_idx, record in enumerate(records, start=2):
         info = resource_info.get(record["result_en"], {})
         row = [
+            r_idx - 1,
+            info.get("数据目录代码", ""),
             record["result_cn"],
-            info.get("单位名称", ""),
-            info.get("资源类型", ""),
+            info.get("单位名称", "") or DEFAULT_DATA_PROVIDER,
+            info.get("资源类型", "") or DEFAULT_RESOURCE_TYPE,
             record["result_en"],
         ]
         for c_idx, value in enumerate(row, start=1):
             ws.cell(r_idx, c_idx, value)
     style_range(ws, 1, len(records) + 1, 1, len(headers))
-    set_widths(ws, [42, 28, 12, 45])
+    set_widths(ws, [8, 22, 42, 28, 12, 45])
     setup_common_ws(ws)
 
 

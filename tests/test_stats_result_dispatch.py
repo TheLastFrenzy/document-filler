@@ -216,7 +216,7 @@ class StatsResultDispatchTest(unittest.TestCase):
             resource_info = {
                 "SRC_ONE": {"数据目录代码": "DIR-SRC-1", "资源名称": "源表一", "单位名称": "原始单位一", "资源类型": "原始类型一"},
                 "SRC_TWO": {"数据目录代码": "DIR-SRC-2", "资源名称": "源表二", "单位名称": "原始单位二", "资源类型": "原始类型二"},
-                "RESULT_ONE": {"资源名称": "结果表一"},
+                "RESULT_ONE": {"数据目录代码": "DIR-RESULT-1", "资源名称": "结果表一", "单位名称": "结果单位一", "资源类型": "结果类型一"},
                 "RESULT_TWO": {"资源名称": "结果表二"},
             }
 
@@ -225,11 +225,18 @@ class StatsResultDispatchTest(unittest.TestCase):
             wb = openpyxl.load_workbook(output)
             source_list = wb["1、数据源表list"]
             relation = wb["2、表融合关系"]
+            result_list = wb["3、数据统计分析结果表list"]
 
             self.assertEqual(source_list["D2"].value, "上海市大数据中心")
             self.assertEqual(source_list["E2"].value, "库表")
             self.assertEqual(source_list["D3"].value, "上海市大数据中心")
             self.assertEqual(source_list["E3"].value, "库表")
+            self.assertEqual(
+                [result_list.cell(1, col).value for col in range(1, 7)],
+                ["序号", "资源编目（非必填）", "资源名称", "数据提供方", "资源类型", "数据统计分析表的资源信息（表名）"],
+            )
+            self.assertEqual([result_list.cell(2, col).value for col in range(1, 7)], [1, "DIR-RESULT-1", "结果表一", "结果单位一", "结果类型一", "RESULT_ONE"])
+            self.assertEqual([result_list.cell(3, col).value for col in range(1, 7)], [2, None, "结果表二", "上海市大数据中心", "库表", "RESULT_TWO"])
             self.assertIsNone(relation["A4"].value)
             self.assertEqual(relation.row_dimensions[4].height, 20)
             self.assertEqual(relation["A5"].value, "2.2 RESULT_TWO")
