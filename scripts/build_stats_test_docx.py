@@ -233,7 +233,7 @@ def build_test_content_elements(doc, materials, service_dir: str, helper, number
     elements = [
         new_paragraph_element(
             doc,
-            f"本章节依据《台账清单》中服务目录为“{service_dir}”的统计分析结果表清单整理，共涉及{len(materials)}个数据统计分析程序。",
+            f"本章节依据《台账清单》中服务目录为“{service_dir}”的结果表清单整理，共涉及{len(materials)}个数据统计分析程序。",
             "缩进_五号_1.5行距",
             first_line_indent=True,
         )

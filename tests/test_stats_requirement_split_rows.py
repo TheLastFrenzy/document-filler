@@ -58,6 +58,45 @@ def make_split_ledger(path: Path):
     wb.save(path)
 
 
+def make_new_column_split_ledger(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    headers = [
+        "服务目录",
+        "需求单号",
+        "工单号",
+        "工单标题",
+        "程序数",
+        "工单描述",
+        "结果表清单",
+        "程序XML文本",
+        "数据统计分析执行周期",
+        "数据更新要求",
+        "数据量对后续运维的特殊要求",
+    ]
+    ws.append(headers)
+    ws.append(
+        [
+            "N08-数据统计分析",
+            "REQ-1",
+            "WO-1",
+            "新版工单标题",
+            "3",
+            "新版工单描述",
+            "结果表一 RESULT_ONE",
+            "<mxGraphModel />",
+            "按日更新",
+            "每日更新",
+            "无",
+        ]
+    )
+    ws.append([None, None, None, None, None, None, "结果表二 RESULT_TWO", "<mxGraphModel />", None, None, None])
+    ws.append([None, None, None, None, None, None, "结果表三 RESULT_THREE", "<mxGraphModel />", None, None, None])
+    for column in ["A", "B", "C", "D", "E", "F", "I", "J", "K"]:
+        ws.merge_cells(f"{column}2:{column}4")
+    wb.save(path)
+
+
 def make_relation_workbook(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -91,6 +130,21 @@ class StatsRequirementSplitRowsTest(unittest.TestCase):
                 ("结果表三", "RESULT_THREE"),
             ],
         )
+
+    def test_groups_accept_new_ledger_column_names(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "ledger.xlsx"
+            make_new_column_split_ledger(ledger)
+
+            groups = module.read_stats_requirement_groups(str(ledger), "N08-数据统计分析")
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["工单内容"], "新版工单标题")
+        self.assertEqual(groups[0]["报表统计次数"], "3")
+        self.assertEqual(groups[0]["业务描述"], "新版工单描述")
+        self.assertEqual(groups[0]["业务说明"], "新版工单描述")
+        self.assertEqual(groups[0]["统计分析结果表清单"], "结果表一 RESULT_ONE\n结果表二 RESULT_TWO\n结果表三 RESULT_THREE")
 
     def test_loads_relation_descriptions_by_result_table_name(self):
         module = load_fill_document_module()

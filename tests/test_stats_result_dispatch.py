@@ -37,6 +37,14 @@ def make_ledger(path: Path):
     wb.save(path)
 
 
+def make_new_column_ledger(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["服务目录", "程序XML文本", "结果表清单"])
+    ws.append(["N08-数据统计分析", "<mxGraphModel />", "测试结果表 TEST_RESULT"])
+    wb.save(path)
+
+
 def make_result_template(path: Path):
     wb = openpyxl.Workbook()
     wb.active.title = "说明"
@@ -147,6 +155,18 @@ class StatsResultDispatchTest(unittest.TestCase):
             self.assertEqual(result, str(output))
             self.assertEqual(calls, [(str(ledger), "N08-数据统计分析", str(template), str(output), str(catalog))])
             self.assertEqual(output.read_bytes(), b"generated")
+
+    def test_result_workbook_builder_accepts_new_result_list_column_name(self):
+        module = load_builder_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            make_new_column_ledger(ledger)
+
+            rows = module.load_ledger_rows(ledger, "N08-数据统计分析")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["统计分析结果表清单"], "测试结果表 TEST_RESULT")
 
     def test_draw_flowchart_png_uses_transparent_background_and_no_push_node(self):
         module = load_builder_module()

@@ -3,6 +3,7 @@ import importlib
 import tempfile
 import unittest
 import zipfile
+import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from unittest import mock
@@ -17,6 +18,7 @@ fitz = importlib.import_module("fitz") if importlib.util.find_spec("fitz") else 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fill_document.py"
+PDF_SCRIPT = ROOT / "scripts" / "build_stats_test_pdf.py"
 
 
 def load_fill_document_module():
@@ -27,11 +29,28 @@ def load_fill_document_module():
     return module
 
 
+def load_pdf_helper_module():
+    spec = importlib.util.spec_from_file_location("build_stats_test_pdf", PDF_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def make_ledger(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(["服务目录", "需求单号", "工单号", "工单内容", "统计分析结果表清单", "03-数据统计分析_测试文档_工单自测报告附件"])
     ws.append(["N08-数据统计分析", "REQ-1", "WO-1", "工单一", "结果表一 RESULT_ONE", None])
+    wb.save(path)
+
+
+def make_new_column_ledger(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["服务目录", "需求单号", "工单号", "工单标题", "结果表清单", "03-数据统计分析_测试文档_工单自测报告附件"])
+    ws.append(["N08-数据统计分析", "REQ-1", "WO-1", "新版工单标题", "结果表一 RESULT_ONE", None])
     wb.save(path)
 
 
@@ -134,6 +153,19 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             self.assertEqual(calls, [(str(ledger), "N08-数据统计分析", str(template), str(output))])
             self.assertEqual(output.read_bytes(), b"generated docx")
 
+    def test_stats_test_parser_accepts_new_ledger_column_names(self):
+        helper = load_pdf_helper_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "ledger.xlsx"
+            make_new_column_ledger(ledger)
+
+            programs, _groups, _meta = helper.load_ledger_programs(str(ledger), "N08-数据统计分析")
+
+        self.assertEqual(len(programs), 1)
+        self.assertEqual(programs[0].work_name, "新版工单标题")
+        self.assertEqual(programs[0].result_cn, "结果表一")
+        self.assertEqual(programs[0].result_en, "RESULT_ONE")
+
     def test_generates_docx_with_template_static_sections_and_conclusion_totals(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -167,7 +199,7 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             self.assertIn("TEMPLATE_COVER_MARKER", full_text)
             self.assertIn("TEMPLATE_STATIC_CHAPTER_MARKER", full_text)
             self.assertIn("TEMPLATE_CONCLUSION_TEXT", full_text)
-            self.assertIn("本章节依据《台账清单》中服务目录为“N08-数据统计分析”的统计分析结果表清单整理，共涉及2个数据统计分析程序。", full_text)
+            self.assertIn("本章节依据《台账清单》中服务目录为“N08-数据统计分析”的结果表清单整理，共涉及2个数据统计分析程序。", full_text)
             self.assertIn("结果表一", full_text)
             self.assertIn("结果表二", full_text)
             self.assertNotIn("专题分析_应急处理_应急工单分类_小时", full_text)

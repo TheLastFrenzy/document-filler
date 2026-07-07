@@ -440,6 +440,48 @@ class DataReportRegressionTest(unittest.TestCase):
             [("程序甲", "A1", "<xml>a1</xml>"), ("程序乙", "A2", "<xml>a2</xml>")],
         )
 
+    def test_read_data_report_design_groups_accepts_new_ledger_column_names(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "ledger.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            headers = [
+                "服务目录",
+                "需求单号",
+                "工单号",
+                "工单标题",
+                "程序数",
+                "工单描述",
+                CATALOG_COL,
+                "结果表清单",
+                "程序XML文本",
+            ]
+            ws.append(headers)
+            ws.append([
+                "N08-数据报表服务",
+                "REQ-1",
+                "WO-1",
+                "新版工单标题",
+                "2",
+                "新版工单描述",
+                "DIR-1",
+                "程序甲 A1",
+                "<xml>a1</xml>",
+            ])
+            ws.append([None, None, None, None, None, None, None, "程序乙 A2", "<xml>a2</xml>"])
+            for col in range(1, 8):
+                ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
+            wb.save(ledger)
+
+            groups = module.read_data_report_design_groups(str(ledger), "N08-数据报表服务")
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["工单内容"], "新版工单标题")
+        self.assertEqual(groups[0]["报表统计次数"], "2")
+        self.assertEqual(groups[0]["业务说明"], "新版工单描述")
+        self.assertEqual(groups[0]["统计分析结果表清单"], "程序甲 A1\n程序乙 A2")
+
     def test_extracts_indicator_field_comments_from_program_xml(self):
         module = load_fill_document_module()
         sql = """

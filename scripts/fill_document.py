@@ -69,6 +69,40 @@ def resolve_output_path(output_path, material_type):
 
 _STATS_RESULT_BUILDER = None
 
+LEDGER_COLUMN_ALIASES = {
+    "工单内容": ("工单内容", "工单标题"),
+    "报表统计次数": ("报表统计次数", "程序数"),
+    "业务说明": ("业务说明", "工单描述"),
+    "业务描述": ("业务描述", "工单描述", "业务说明"),
+    "统计分析结果表清单": ("统计分析结果表清单", "结果表清单"),
+}
+
+
+def ledger_aliases(canonical_name):
+    return LEDGER_COLUMN_ALIASES.get(canonical_name, (canonical_name,))
+
+
+def ledger_header_index(headers, canonical_name):
+    for alias in ledger_aliases(canonical_name):
+        if alias in headers:
+            return headers.index(alias)
+    return -1
+
+
+def normalize_ledger_record(record):
+    normalized = dict(record)
+    for canonical_name, aliases in LEDGER_COLUMN_ALIASES.items():
+        if str(normalized.get(canonical_name, "") or "").strip():
+            continue
+        for alias in aliases:
+            value = str(normalized.get(alias, "") or "").strip()
+            if value:
+                normalized[canonical_name] = value
+                break
+        normalized.setdefault(canonical_name, "")
+    return normalized
+
+
 def read_excel(excel_path, service_dir):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     ws = wb.active
@@ -79,6 +113,7 @@ def read_excel(excel_path, service_dir):
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=r, column=c).value
             rd[headers[c - 1]] = str(v).strip() if v is not None else ""
+        rd = normalize_ledger_record(rd)
         if rd.get("服务目录") == service_dir:
             rd["_row"] = r
             rd["_vml_row"] = r - 1
@@ -1537,6 +1572,7 @@ def read_stats_requirement_groups(excel_path, service_dir):
         if get(row, service_col) != service_dir:
             continue
         record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
+        record = normalize_ledger_record(record)
         key = record.get("工单号") or f"{record.get('需求单号', '')}|{record.get('工单内容', '')}|{row}"
         if key not in by_key:
             record["_row"] = row
@@ -1569,7 +1605,8 @@ def read_data_report_design_groups(excel_path, service_dir):
         raise ValueError("台账清单缺少「服务目录」列")
     get = merged_value_getter(ws)
     service_col = headers.index("服务目录") + 1
-    result_col = headers.index("统计分析结果表清单") + 1 if "统计分析结果表清单" in headers else None
+    result_col_index = ledger_header_index(headers, "统计分析结果表清单")
+    result_col = result_col_index + 1 if result_col_index >= 0 else None
     xml_col = headers.index("程序XML文本") + 1 if "程序XML文本" in headers else None
     logic_col = headers.index("数据处理逻辑") if "数据处理逻辑" in headers else -1
     groups = []
@@ -1579,6 +1616,7 @@ def read_data_report_design_groups(excel_path, service_dir):
         if get(row, service_col) != service_dir:
             continue
         record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
+        record = normalize_ledger_record(record)
         key = record.get("工单号") or f"{record.get('需求单号', '')}|{record.get('工单内容', '')}|{row}"
         if key not in by_key:
             record["_row"] = row

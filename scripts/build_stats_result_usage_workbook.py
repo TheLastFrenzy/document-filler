@@ -26,6 +26,13 @@ from PIL import Image, ImageDraw, ImageFont
 DEFAULT_SERVICE_DIR = "N08-数据统计分析"
 LEDGER_XML_COL = "程序XML文本"
 LEDGER_RESULT_COL = "统计分析结果表清单"
+LEDGER_COLUMN_ALIASES = {
+    LEDGER_RESULT_COL: (LEDGER_RESULT_COL, "结果表清单"),
+    "工单内容": ("工单内容", "工单标题"),
+    "报表统计次数": ("报表统计次数", "程序数"),
+    "业务说明": ("业务说明", "工单描述"),
+    "业务描述": ("业务描述", "工单描述", "业务说明"),
+}
 
 SHEET_SOURCE_LIST = "1、数据源表list"
 SHEET_RELATION = "2、表融合关系"
@@ -74,6 +81,20 @@ def norm_name(value: object) -> str:
     return text.strip("_ `\"[];")
 
 
+def normalize_ledger_record(record: dict[str, str]) -> dict[str, str]:
+    normalized = dict(record)
+    for canonical_name, aliases in LEDGER_COLUMN_ALIASES.items():
+        if str(normalized.get(canonical_name, "") or "").strip():
+            continue
+        for alias in aliases:
+            value = str(normalized.get(alias, "") or "").strip()
+            if value:
+                normalized[canonical_name] = value
+                break
+        normalized.setdefault(canonical_name, "")
+    return normalized
+
+
 def base_resource_name(value: object) -> str:
     text = norm_name(value)
     return text
@@ -105,6 +126,7 @@ def load_ledger_rows(ledger_path: Path, service_dir: str) -> list[dict[str, str]
         if get(row, service_col) != service_dir:
             continue
         record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
+        record = normalize_ledger_record(record)
         record["_row"] = str(row)
         rows.append(record)
     return rows

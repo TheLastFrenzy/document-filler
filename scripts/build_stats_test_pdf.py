@@ -45,6 +45,10 @@ if sys.platform == "win32":
 
 RESULT_HEADER = "统计分析结果表清单"
 ATTACHMENT_HEADER = "03-数据统计分析_测试文档_工单自测报告附件"
+LEDGER_COLUMN_ALIASES = {
+    "工单内容": ("工单内容", "工单标题"),
+    RESULT_HEADER: (RESULT_HEADER, "结果表清单"),
+}
 
 SECTION_LABELS = [
     "程序中英文名称规范性",
@@ -146,6 +150,13 @@ def get_cell(ws, merged, row: int, col: int) -> str:
     return text(value)
 
 
+def header_col(hmap: dict[str, int], canonical_name: str) -> int | None:
+    for alias in LEDGER_COLUMN_ALIASES.get(canonical_name, (canonical_name,)):
+        if alias in hmap:
+            return hmap[alias]
+    return hmap.get(canonical_name)
+
+
 def load_ledger_programs(ledger_path: str | os.PathLike, service_dir: str):
     wb = openpyxl.load_workbook(ledger_path, data_only=True)
     ws = wb.active
@@ -153,23 +164,25 @@ def load_ledger_programs(ledger_path: str | os.PathLike, service_dir: str):
     headers = [text(ws.cell(1, c).value) for c in range(1, ws.max_column + 1)]
     hmap = {header: idx + 1 for idx, header in enumerate(headers) if header}
     required = ["服务目录", "工单号", "需求单号", "工单内容", RESULT_HEADER, ATTACHMENT_HEADER]
-    missing = [header for header in required if header not in hmap]
+    missing = [header for header in required if header_col(hmap, header) is None]
     if missing:
         raise ValueError(f"台账缺少必要列: {', '.join(missing)}")
+    work_name_col = header_col(hmap, "工单内容")
+    result_col = header_col(hmap, RESULT_HEADER)
 
     programs: list[Program] = []
     groups: dict[str, list[Program]] = {}
     for row in range(2, ws.max_row + 1):
         if get_cell(ws, merged, row, hmap["服务目录"]) != service_dir:
             continue
-        result_cn, result_en = parse_result_name(get_cell(ws, merged, row, hmap[RESULT_HEADER]))
+        result_cn, result_en = parse_result_name(get_cell(ws, merged, row, result_col))
         if not result_en:
             continue
         program = Program(
             row=row,
             order=get_cell(ws, merged, row, hmap["工单号"]),
             demand_no=get_cell(ws, merged, row, hmap["需求单号"]),
-            work_name=get_cell(ws, merged, row, hmap["工单内容"]),
+            work_name=get_cell(ws, merged, row, work_name_col),
             result_cn=result_cn,
             result_en=result_en,
         )
@@ -588,7 +601,7 @@ def add_static_sections(story: list, styles, regular_font: str, service_dir: str
 
 def add_test_content(story: list, styles, materials: list[ProgramMaterial], doc_width: float, service_dir: str):
     story.append(p("5. 测试内容", styles["h1"]))
-    story.append(p(f"本章节依据《台账清单》中服务目录为“{service_dir}”的统计分析结果表清单整理，共涉及{len(materials)}个数据统计分析程序。", styles["body"]))
+    story.append(p(f"本章节依据《台账清单》中服务目录为“{service_dir}”的结果表清单整理，共涉及{len(materials)}个数据统计分析程序。", styles["body"]))
     for index, item in enumerate(materials, start=1):
         if index > 1:
             story.append(PageBreak())
