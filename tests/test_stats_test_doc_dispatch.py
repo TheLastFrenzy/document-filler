@@ -2,16 +2,17 @@ import importlib.util
 import importlib
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 from unittest import mock
 
 import openpyxl
+from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 fitz = importlib.import_module("fitz") if importlib.util.find_spec("fitz") else None
-if importlib.util.find_spec("pypdf"):
-    PdfReader = importlib.import_module("pypdf").PdfReader
-else:
-    PdfReader = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,43 +35,93 @@ def make_ledger(path: Path):
     wb.save(path)
 
 
-def make_template_pdf(path: Path):
-    doc = fitz.open()
-    for index in range(21):
-        page = doc.new_page(width=595, height=842)
-        page.insert_text((72, 72), f"TEMPLATE_PAGE_{index + 1}", fontsize=12)
-    doc[0].insert_text((72, 110), "TEMPLATE_COVER_MARKER", fontsize=12)
-    doc[1].insert_text((72, 110), "TEMPLATE_REVISION_MARKER", fontsize=12)
-    doc[4].insert_text((72, 110), "1. 文档说明", fontname="china-s", fontsize=12)
-    doc[4].insert_text((72, 130), "TEMPLATE_STATIC_CHAPTER_MARKER", fontsize=12)
-    doc[5].insert_text((72, 110), "3. 测试环境与配置", fontname="china-s", fontsize=12)
-    doc[6].insert_text((72, 110), "4. 测试标准", fontname="china-s", fontsize=12)
-    doc[7].insert_text((72, 110), "5. 测试内容", fontname="china-s", fontsize=12)
-    doc[18].insert_text((72, 110), "5.5. 专题分析_应急处理_应急工单分类_小时", fontname="china-s", fontsize=12)
-    doc[18].insert_text((72, 130), "OLD_SECTION_SHOULD_NOT_COPY", fontsize=12)
+def add_direct_numbering(paragraph, ilvl: int, num_id: int = 1):
+    p_pr = paragraph._p.get_or_add_pPr()
+    existing = p_pr.find(qn("w:numPr"))
+    if existing is not None:
+        p_pr.remove(existing)
+    num_pr = OxmlElement("w:numPr")
+    ilvl_el = OxmlElement("w:ilvl")
+    ilvl_el.set(qn("w:val"), str(ilvl))
+    num_id_el = OxmlElement("w:numId")
+    num_id_el.set(qn("w:val"), str(num_id))
+    num_pr.append(ilvl_el)
+    num_pr.append(num_id_el)
+    p_pr.append(num_pr)
+
+
+def make_template_docx(path: Path):
+    doc = Document()
+    doc.add_paragraph("TEMPLATE_COVER_MARKER")
+    doc.add_paragraph("修订记录")
+    doc.add_heading("文档说明", level=1)
+    doc.add_paragraph("TEMPLATE_STATIC_CHAPTER_MARKER")
+    doc.add_heading("项目背景", level=1)
+    doc.add_heading("测试环境与配置", level=1)
+    doc.add_heading("测试标准", level=1)
+    add_direct_numbering(doc.add_heading("测试内容", level=1), 0)
+    doc.add_paragraph("旧的测试内容占位说明。")
+    add_direct_numbering(doc.add_heading("专题分析_应急处理_应急工单分类_小时", level=2), 1)
+    add_direct_numbering(doc.add_heading("程序中英文名称规范性", level=3), 2)
+    doc.add_paragraph("OLD_SECTION_SHOULD_NOT_COPY")
+    add_direct_numbering(doc.add_heading("测试结论", level=1), 0)
+    doc.add_paragraph("TEMPLATE_CONCLUSION_TEXT")
+    table = doc.add_table(rows=3, cols=4)
+    table.rows[0].cells[0].text = "测试内容"
+    table.rows[0].cells[1].text = "测试项"
+    table.rows[0].cells[2].text = "通过项"
+    table.rows[0].cells[3].text = "通过率"
+    table.rows[1].cells[0].text = "数据测试"
+    table.rows[1].cells[1].text = "Xx"
+    table.rows[1].cells[2].text = "Xx"
+    table.rows[1].cells[3].text = "100%"
+    table.rows[2].cells[0].text = "程序测试"
+    table.rows[2].cells[1].text = "Xx"
+    table.rows[2].cells[2].text = "Xx"
+    table.rows[2].cells[3].text = "100%"
     doc.save(path)
-    doc.close()
+
+
+def paragraph_numbering(docx_path: Path, target_text: str):
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    with zipfile.ZipFile(docx_path, "r") as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    for paragraph in root.findall(".//w:p", ns):
+        text = "".join(node.text or "" for node in paragraph.findall(".//w:t", ns)).strip()
+        if text != target_text:
+            continue
+        p_pr = paragraph.find("w:pPr", ns)
+        num_pr = p_pr.find("w:numPr", ns) if p_pr is not None else None
+        if num_pr is None:
+            return None
+        ilvl = num_pr.find("w:ilvl", ns)
+        num_id = num_pr.find("w:numId", ns)
+        return (
+            ilvl.attrib.get(f"{{{ns['w']}}}val") if ilvl is not None else "",
+            num_id.attrib.get(f"{{{ns['w']}}}val") if num_id is not None else "",
+        )
+    return None
 
 
 class StatsTestDocDispatchTest(unittest.TestCase):
-    def test_dispatches_to_stats_test_pdf_generator(self):
+    def test_dispatches_to_stats_test_docx_generator(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             ledger = temp / "ledger.xlsx"
-            template = temp / "03-数据统计分析_测试文档.pdf"
-            output = temp / "out.pdf"
+            template = temp / "03-数据统计分析_测试文档.docx"
+            output = temp / "out.docx"
             make_ledger(ledger)
-            template.write_bytes(b"%PDF-1.4\n% placeholder\n")
+            make_template_docx(template)
 
             calls = []
 
             def fake_generator(excel_path, service_dir, template_path, output_path):
                 calls.append((excel_path, service_dir, template_path, output_path))
-                Path(output_path).write_bytes(b"%PDF-1.4\n% generated\n")
+                Path(output_path).write_bytes(b"generated docx")
                 return output_path
 
-            with mock.patch.object(module, "fill_stats_test_pdf", fake_generator, create=True):
+            with mock.patch.object(module, "fill_stats_test_docx", fake_generator, create=True):
                 result = module.fill_document(
                     excel_path=str(ledger),
                     service_dir="N08-数据统计分析",
@@ -81,17 +132,15 @@ class StatsTestDocDispatchTest(unittest.TestCase):
 
             self.assertEqual(result, str(output))
             self.assertEqual(calls, [(str(ledger), "N08-数据统计分析", str(template), str(output))])
-            self.assertEqual(output.read_bytes(), b"%PDF-1.4\n% generated\n")
+            self.assertEqual(output.read_bytes(), b"generated docx")
 
-    def test_generates_pdf_with_original_conclusion_totals(self):
-        if fitz is None or PdfReader is None:
-            self.skipTest("requires PDF test dependencies: pymupdf and pypdf")
+    def test_generates_docx_with_template_static_sections_and_conclusion_totals(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             ledger = temp / "ledger.xlsx"
-            template = temp / "03-数据统计分析_测试文档.pdf"
-            output = temp / "out.pdf"
+            template = temp / "03-数据统计分析_测试文档.docx"
+            output = temp / "out.docx"
 
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -101,7 +150,7 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             for column in ["A", "B", "C", "D"]:
                 ws.merge_cells(f"{column}2:{column}3")
             wb.save(ledger)
-            make_template_pdf(template)
+            make_template_docx(template)
 
             result = module.fill_document(
                 excel_path=str(ledger),
@@ -113,24 +162,44 @@ class StatsTestDocDispatchTest(unittest.TestCase):
 
             self.assertEqual(result, str(output))
             self.assertTrue(output.exists())
-            pdf = PdfReader(str(output))
-            self.assertIn("TEMPLATE_COVER_MARKER", pdf.pages[0].extract_text())
-            self.assertIn("TEMPLATE_REVISION_MARKER", pdf.pages[1].extract_text())
-            self.assertIn("TEMPLATE_STATIC_CHAPTER_MARKER", pdf.pages[4].extract_text())
-            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            doc = Document(output)
+            full_text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+            self.assertIn("TEMPLATE_COVER_MARKER", full_text)
+            self.assertIn("TEMPLATE_STATIC_CHAPTER_MARKER", full_text)
+            self.assertIn("TEMPLATE_CONCLUSION_TEXT", full_text)
+            self.assertIn("本章节依据《台账清单》中服务目录为“N08-数据统计分析”的统计分析结果表清单整理，共涉及2个数据统计分析程序。", full_text)
+            self.assertIn("结果表一", full_text)
+            self.assertIn("结果表二", full_text)
             self.assertNotIn("专题分析_应急处理_应急工单分类_小时", full_text)
             self.assertNotIn("OLD_SECTION_SHOULD_NOT_COPY", full_text)
-            last_text = pdf.pages[-1].extract_text()
-            self.assertGreaterEqual(last_text.count("2"), 4)
-            self.assertIn("100%", last_text)
-            link_doc = fitz.open(str(output))
-            links = link_doc[2].get_links() + link_doc[3].get_links()
-            goto_targets = [link["page"] for link in links if link.get("kind") == fitz.LINK_GOTO]
-            self.assertGreaterEqual(len(goto_targets), 14)
-            self.assertIn(7, goto_targets)
-            self.assertIn(8, goto_targets)
-            self.assertEqual(max(goto_targets), link_doc.page_count - 1)
-            link_doc.close()
+            table_texts = [
+                [cell.text for cell in row.cells]
+                for table in doc.tables
+                for row in table.rows
+            ]
+            self.assertIn(["数据测试", "2", "2", "100%"], table_texts)
+            self.assertIn(["程序测试", "2", "2", "100%"], table_texts)
+
+    def test_generated_test_content_reuses_template_heading_numbering(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "03-数据统计分析_测试文档.docx"
+            output = temp / "out.docx"
+            make_ledger(ledger)
+            make_template_docx(template)
+
+            module.fill_document(
+                excel_path=str(ledger),
+                service_dir="N08-数据统计分析",
+                material_type="03-数据统计分析_测试文档",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            self.assertEqual(paragraph_numbering(output, "结果表一"), ("1", "1"))
+            self.assertEqual(paragraph_numbering(output, "程序中英文名称规范性"), ("2", "1"))
 
 
 if __name__ == "__main__":

@@ -45,25 +45,25 @@ class CliContractTest(unittest.TestCase):
             self.assertEqual(calls, [str(expected_output)])
             self.assertEqual(expected_output.read_bytes(), b"generated")
 
-    def test_output_directory_uses_pdf_extension_for_stats_test_document(self):
+    def test_output_directory_uses_docx_extension_for_stats_test_document(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "outputs"
             output_dir.mkdir()
-            expected_output = output_dir / "03-数据统计分析_测试文档.pdf"
+            expected_output = output_dir / "03-数据统计分析_测试文档.docx"
             calls = []
 
-            def fake_pdf(excel_path, service_dir, template_path, output_path):
+            def fake_docx(excel_path, service_dir, template_path, output_path):
                 calls.append(output_path)
-                Path(output_path).write_bytes(b"%PDF-1.4\n")
+                Path(output_path).write_bytes(b"generated docx")
                 return output_path
 
-            with mock.patch.object(module, "fill_stats_test_pdf", fake_pdf):
+            with mock.patch.object(module, "fill_stats_test_docx", fake_docx):
                 result = module.fill_document(
                     excel_path="ledger.xlsx",
                     service_dir="N08-数据统计分析",
                     material_type="03-数据统计分析_测试文档",
-                    template_path="template.pdf",
+                    template_path="template.docx",
                     output_path=str(output_dir),
                 )
 

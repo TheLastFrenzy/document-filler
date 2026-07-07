@@ -1,6 +1,6 @@
 interface:
   display_name: "Document Filler"
-  short_description: "台账清单生成验收 Word/PDF/Excel 材料"
+  short_description: "台账清单生成验收 Word/Excel 材料"
   default_prompt: "Use $document-filler to generate an acceptance document from a ledger, service directory, material type, template path, and output path."
 
 policy:

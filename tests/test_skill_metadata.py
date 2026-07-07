@@ -20,13 +20,13 @@ class SkillMetadataTest(unittest.TestCase):
         ]
 
         self.assertEqual(top_level_keys, ["name", "description"])
-        self.assertIn("Word、PDF 或 Excel", frontmatter)
+        self.assertIn("Word 或 Excel", frontmatter)
 
     def test_openai_yaml_matches_current_material_scope(self):
         content = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
         self.assertIn('display_name: "Document Filler"', content)
-        self.assertIn("Word/PDF/Excel", content)
+        self.assertIn("Word/Excel", content)
         self.assertIn("Use $document-filler", content)
         self.assertNotIn("支持需求/设计文档", content)
 
