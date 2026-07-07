@@ -121,6 +121,8 @@ class StatsRequirementSplitRowsTest(unittest.TestCase):
         self.assertEqual([step for step, _ in steps], ["1", "2", "3"])
         self.assertIn("读取源表A", steps[0][1])
         self.assertIn("过滤无效记录", steps[1][1])
+        self.assertNotIn("清洗", steps[1][1])
+        self.assertIn("数据范围确认", steps[1][1])
         self.assertIn("写入结果表一", steps[2][1])
 
     def test_dispatch_uses_split_groups_and_sibling_relation_workbook(self):

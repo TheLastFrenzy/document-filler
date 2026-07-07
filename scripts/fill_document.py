@@ -130,6 +130,34 @@ def add_solid_borders(tblPr):
 def xml_safe(t):
     if not t: return ""
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', t)
+
+
+STATS_LOGIC_TERM_REPLACEMENTS = (
+    ("数据筛选清洗", "数据范围确认"),
+    ("筛选清洗", "范围确认"),
+    ("清洗加工后的数据", "整理后的数据"),
+    ("清洗加工后", "整理后"),
+    ("清洗加工", "整理"),
+    ("标准化抽取", "按字段口径整理"),
+    ("数据抽取", "数据取用"),
+    ("抽取", "取用"),
+    ("质量检查", "口径核对"),
+    ("清洗", "整理"),
+    ("加密", ""),
+)
+
+
+def sanitize_stats_logic_text(value):
+    text = str(value or "")
+    for old, new in STATS_LOGIC_TERM_REPLACEMENTS:
+        text = text.replace(old, new)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"（\s*）", "", text)
+    text = re.sub(r"：\s*，", "：", text)
+    text = re.sub(r"，{2,}", "，", text)
+    return text.strip()
+
+
 def mp(text, style_id, indent=None, word_wrap=False):
     p = OxmlElement("w:p")
     pr = OxmlElement("w:pPr")
@@ -1647,14 +1675,14 @@ def load_stats_relation_descriptions(relation_path):
             if label == "文字描述" and current_result:
                 desc = ws.cell(row, col + 1).value if col + 1 <= ws.max_column else ""
                 if desc:
-                    descriptions[current_result] = str(desc).strip()
+                    descriptions[current_result] = sanitize_stats_logic_text(desc)
                 break
     wb.close()
     return descriptions
 
 
 def _clean_logic_step(text):
-    text = xml_safe(str(text or ""))
+    text = sanitize_stats_logic_text(xml_safe(str(text or "")))
     text = re.sub(r"^\s*\d+\s*[\.、．)\uff09]?\s*", "", text)
     text = re.sub(r"[\t ]+", " ", text)
     return text.strip(" \r\n\t；;。")
@@ -1708,7 +1736,7 @@ def build_stats_requirement_business_logic_steps(results, descriptions):
             merged = "；".join(piece.rstrip("。；;") for piece in pieces)
             all_steps.append(f"{table_label}：{merged}。")
 
-    return [(str(idx), xml_safe(step[:500])) for idx, step in enumerate(all_steps, start=1)]
+    return [(str(idx), xml_safe(sanitize_stats_logic_text(step)[:500])) for idx, step in enumerate(all_steps, start=1)]
 
 
 def make_biz_table(header_text, rows_data):
@@ -2862,7 +2890,7 @@ def load_stats_design_usage_data(relation_path):
             for col in range(1, ws.max_column + 1):
                 label = str(ws.cell(row, col).value or "").strip()
                 if label == "文字描述" and current:
-                    relation_map.setdefault(current, {})["description"] = str(ws.cell(row, col + 1).value or "").strip()
+                    relation_map.setdefault(current, {})["description"] = sanitize_stats_logic_text(ws.cell(row, col + 1).value)
                     break
                 if label == "数据处理流程图" and current:
                     entry = relation_map.setdefault(current, {})

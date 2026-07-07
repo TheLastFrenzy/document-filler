@@ -40,6 +40,31 @@ DEFAULT_HIGHLIGHT_FILL = "F2F2F2"
 DEFAULT_DATA_PROVIDER = "上海市大数据中心"
 DEFAULT_RESOURCE_TYPE = "库表"
 
+STATS_LOGIC_TERM_REPLACEMENTS = (
+    ("数据筛选清洗", "数据范围确认"),
+    ("筛选清洗", "范围确认"),
+    ("清洗加工后的数据", "整理后的数据"),
+    ("清洗加工后", "整理后"),
+    ("清洗加工", "整理"),
+    ("标准化抽取", "按字段口径整理"),
+    ("数据抽取", "数据取用"),
+    ("抽取", "取用"),
+    ("质量检查", "口径核对"),
+    ("清洗", "整理"),
+    ("加密", ""),
+)
+
+
+def sanitize_stats_logic_text(value: object) -> str:
+    text = str(value or "")
+    for old, new in STATS_LOGIC_TERM_REPLACEMENTS:
+        text = text.replace(old, new)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"（\s*）", "", text)
+    text = re.sub(r"：\s*，", "：", text)
+    text = re.sub(r"，{2,}", "，", text)
+    return text.strip()
+
 
 def norm_name(value: object) -> str:
     text = str(value or "").strip().strip("`\"[];").upper()
@@ -324,7 +349,7 @@ def sql_comment_summary(sql: str) -> str:
     if re.search(r"\bcreate\s+table\b", sql, flags=re.I):
         return "创建结果表或中间加工表"
     if re.search(r"\binsert\s+into\b", sql, flags=re.I):
-        return "将清洗加工后的数据写入目标表"
+        return "将整理后的数据写入目标表"
     if re.search(r"\btruncate\s+table\b", sql, flags=re.I):
         return "清空目标表历史数据"
     if re.search(r"\balter\s+table\b", sql, flags=re.I):
@@ -345,7 +370,7 @@ def source_label(source: str, resource_info: dict[str, dict] | None = None) -> s
     info = (resource_info or {}).get(source, {})
     resource_name = str(info.get("资源名称", "") or "").strip()
     if resource_name and resource_name != source:
-        return f"{resource_name}（{source}）"
+        return sanitize_stats_logic_text(f"{resource_name}（{source}）")
     return source
 
 
@@ -431,9 +456,9 @@ def build_business_logic_steps(record: dict, resource_info: dict[str, dict]) -> 
         steps.append(f"数据来源准备：读取程序中配置的基础数据，作为{theme}的输入。")
 
     if where_hints:
-        steps.append(f"数据筛选清洗：{ '，'.join(where_hints[:4]) }，形成可参与统计分析的有效数据集。")
+        steps.append(f"数据范围确认：{ '，'.join(where_hints[:4]) }，形成可参与统计分析的业务记录范围。")
     else:
-        steps.append("数据筛选清洗：对源表字段进行标准化抽取，保留结果表所需的有效记录。")
+        steps.append("数据范围确认：按结果表字段口径整理源表记录，保留本次统计分析所需的业务范围。")
 
     if calc_hints:
         steps.append(f"融合加工计算：{ '，'.join(calc_hints[:4]) }，生成结果表所需的统计口径和明细字段。")
@@ -446,8 +471,8 @@ def build_business_logic_steps(record: dict, resource_info: dict[str, dict]) -> 
         suffix = "等字段" if len(field_names) > 4 else "字段"
         steps.append(f"结果字段整理：输出{preview}{suffix}，补充业务时间、批次号等运行信息。")
 
-    steps.append(f"结果输出：将加工后的数据写入{result_cn}（{result_en}），供后续数据统计分析应用使用。")
-    return steps
+    steps.append(f"结果输出：将统计结果写入{result_cn}（{result_en}），供后续数据统计分析应用使用。")
+    return [sanitize_stats_logic_text(step) for step in steps]
 
 
 def xml_sheet_paths(xlsx_path: Path) -> dict[str, str]:
@@ -776,7 +801,7 @@ def draw_flowchart_png(record: dict, output_path: Path) -> None:
             label = f"提取处理表数据\n{source}"
         else:
             info = record.get("resource_info", {}).get(source, {})
-            resource_name = str(info.get("资源名称", "") or "").strip()
+            resource_name = sanitize_stats_logic_text(info.get("资源名称", ""))
             label = f"提取处理表数据\n{resource_name}\n{source}" if resource_name else f"提取处理表数据\n{source}"
         draw_node(draw, box, label, font_small, fill=node_fill, rounded=False)
 

@@ -141,6 +141,30 @@ def make_usage_workbook_with_nullable_unique_values(path: Path):
     wb.save(path)
 
 
+def make_usage_workbook_with_legacy_logic_terms(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "1、数据源表list"
+    ws.append(["资源名称", "资源编目（非必填）", "资源信息（表名）", "数据融合加工表"])
+    ws.append(["源表一", "DIR-SRC-1", "SRC_ONE", "FUSION_RESULT_ONE"])
+
+    ws = wb.create_sheet("2、表融合关系")
+    ws["A1"] = "2.1 FUSION_RESULT_ONE"
+    ws["B2"] = "文字描述"
+    ws["C2"] = (
+        "1\t数据来源准备：读取源表一作为基础数据。\n"
+        "2\t数据筛选清洗：对源表字段进行标准化抽取，并执行质量检查。\n"
+        "3\t结果输出：写入加密结果表。"
+    )
+
+    ws = wb.create_sheet("4、数据统计分析结果表详情")
+    ws["A1"] = "4.1"
+    ws["B1"] = "FUSION_RESULT_ONE"
+    ws.append(["", "字段中文名", "字段英文名", "字段类型", "默认", "不可为空", "唯一", "字段注释"])
+    ws.append(["", "字段一", "FIELD_ONE", "VARCHAR2(50)", "", "不可为空", "唯一", "字段说明"])
+    wb.save(path)
+
+
 def make_catalog(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -379,6 +403,39 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertEqual(required[4], "是")
             self.assertEqual(optional[3], "是")
             self.assertEqual(optional[4], "否")
+
+    def test_stats_design_logic_description_avoids_legacy_xml_terms(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "02-数据统计分析_设计文档.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_single_fusion_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook_with_legacy_logic_terms(relation)
+            make_catalog(catalog)
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            doc = Document(output)
+            text_parts = [p.text for p in doc.paragraphs]
+            text_parts.extend(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+            full_text = "\n".join(text_parts)
+
+            for banned in ["清洗", "抽取", "加密", "质量检查"]:
+                self.assertNotIn(banned, full_text)
+            self.assertIn("数据范围确认", full_text)
 
     def test_loads_stats_design_flowchart_from_standard_excel_drawing(self):
         module = load_fill_document_module()

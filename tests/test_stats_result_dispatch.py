@@ -94,6 +94,27 @@ def make_records_with_flowcharts(temp: Path):
 
 
 class StatsResultDispatchTest(unittest.TestCase):
+    def test_business_logic_steps_avoid_unsuitable_xml_logic_terms(self):
+        module = load_builder_module()
+        record = {
+            "result_cn": "热线工单统计结果表",
+            "result_en": "FUSION_HOTLINE_ORDER",
+            "sources": ["SRC_SECRET"],
+            "nodes": [{"sql": "insert into FUSION_HOTLINE_ORDER select ID, AREA_NAME from SRC_SECRET"}],
+            "fields": [{"字段中文名": "区域名称"}, {"字段中文名": "工单数量"}],
+        }
+        resource_info = {
+            "SRC_SECRET": {"资源名称": "属地返还加密明细表"},
+        }
+
+        steps = module.build_business_logic_steps(record, resource_info)
+        text = "\n".join(steps)
+
+        for banned in ["清洗", "抽取", "加密", "质量检查"]:
+            self.assertNotIn(banned, text)
+        self.assertIn("数据范围确认", text)
+        self.assertIn("字段口径", text)
+
     def test_dispatches_to_stats_result_workbook_builder(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
