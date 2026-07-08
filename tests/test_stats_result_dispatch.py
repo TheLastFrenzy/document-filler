@@ -246,6 +246,7 @@ class StatsResultDispatchTest(unittest.TestCase):
             source_list = wb["1、数据源表list"]
             relation = wb["2、表融合关系"]
             result_list = wb["3、数据统计分析结果表list"]
+            result_detail = wb["4、数据统计分析结果表详情"]
 
             self.assertEqual(source_list["D2"].value, "上海市大数据中心")
             self.assertEqual(source_list["E2"].value, "库表")
@@ -257,9 +258,35 @@ class StatsResultDispatchTest(unittest.TestCase):
             )
             self.assertEqual([result_list.cell(2, col).value for col in range(1, 7)], [1, "DIR-RESULT-1", "结果表一", "结果单位一", "结果类型一", "RESULT_ONE"])
             self.assertEqual([result_list.cell(3, col).value for col in range(1, 7)], [2, None, "结果表二", "上海市大数据中心", "库表", "RESULT_TWO"])
+            self.assertNotIn("A1:C1", [str(merged) for merged in relation.merged_cells.ranges])
+            self.assertEqual(relation["A1"].value, "2.1 RESULT_ONE")
+            self.assertIsNone(relation["B1"].value)
+            self.assertIsNone(relation["C1"].value)
+            self.assertIsNone(relation["A1"].fill.fill_type)
+            self.assertIsNone(relation["B2"].fill.fill_type)
+            self.assertIsNone(relation["B3"].fill.fill_type)
             self.assertIsNone(relation["A4"].value)
             self.assertEqual(relation.row_dimensions[4].height, 20)
+            self.assertNotIn("A5:C5", [str(merged) for merged in relation.merged_cells.ranges])
             self.assertEqual(relation["A5"].value, "2.2 RESULT_TWO")
+            self.assertIsNone(relation["A5"].fill.fill_type)
+            self.assertIsNone(relation["B6"].fill.fill_type)
+            self.assertIsNone(relation["B7"].fill.fill_type)
+            detail_merges = [str(merged) for merged in result_detail.merged_cells.ranges]
+            self.assertNotIn("A1:H1", detail_merges)
+            self.assertNotIn("B2:H2", detail_merges)
+            self.assertEqual(result_detail["A1"].value, "4.1 结果表一")
+            self.assertIsNone(result_detail["A1"].fill.fill_type)
+            self.assertIsNone(result_detail["B1"].value)
+            self.assertEqual(result_detail["B2"].value, "RESULT_ONE")
+            self.assertTrue(result_detail["B2"].font.bold)
+            self.assertEqual(result_detail["B2"].alignment.horizontal, "center")
+            self.assertIsNone(result_detail["C2"].value)
+            self.assertNotIn("A6:H6", detail_merges)
+            self.assertNotIn("B7:H7", detail_merges)
+            self.assertEqual(result_detail["A6"].value, "4.2 结果表二")
+            self.assertIsNone(result_detail["A6"].fill.fill_type)
+            self.assertEqual(result_detail["B7"].value, "RESULT_TWO")
 
             for worksheet in wb.worksheets:
                 for row in worksheet.iter_rows():
@@ -267,7 +294,7 @@ class StatsResultDispatchTest(unittest.TestCase):
                         if cell.value not in (None, ""):
                             self.assertEqual(cell.font.name, "宋体")
 
-            for cell in [source_list["A1"], relation["A1"], relation["B2"], wb["3、数据统计分析结果表list"]["A1"], wb["4、数据统计分析结果表详情"]["A1"]]:
+            for cell in [source_list["A1"], wb["3、数据统计分析结果表list"]["A1"], wb["4、数据统计分析结果表详情"]["B3"]]:
                 self.assertEqual(cell.fill.fgColor.rgb, "00F2F2F2")
             wb.close()
 

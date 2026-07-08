@@ -150,7 +150,10 @@ def parse_model_data(raw: str | None) -> dict:
 
 
 def parse_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
-    root = ET.fromstring(xml_text)
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return parse_truncated_xml_program(xml_text)
     nodes: list[dict] = []
     edges: list[dict] = []
     for elem in root.iter():
@@ -177,6 +180,37 @@ def parse_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
                     "sql": sql,
                     "expression": expression,
                     "style": elem.attrib.get("style", ""),
+                }
+            )
+    return nodes, edges
+
+
+def parse_truncated_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    for match in re.finditer(r"<mxCell\b[^>]*(?:>|$)", xml_text or "", flags=re.S):
+        attrs = dict(re.findall(r"([A-Za-z_:][\w:.-]*)=\"([^\"]*)\"", match.group(0)))
+        if attrs.get("edge") == "1":
+            edges.append(
+                {
+                    "source": attrs.get("source"),
+                    "target": attrs.get("target"),
+                    "label": attrs.get("value", ""),
+                }
+            )
+            continue
+        data = parse_model_data(attrs.get("modelData"))
+        label = data.get("stepLabel") or attrs.get("title") or attrs.get("value") or ""
+        sql = str(data.get("sql") or "")
+        expression = str(data.get("expression") or "")
+        if label or sql or expression:
+            nodes.append(
+                {
+                    "id": attrs.get("id", ""),
+                    "label": label,
+                    "sql": sql,
+                    "expression": expression,
+                    "style": attrs.get("style", ""),
                 }
             )
     return nodes, edges
@@ -939,12 +973,10 @@ def fill_relation(ws, records: list[dict]) -> None:
     clear_sheet(ws)
     row = 1
     for idx, record in enumerate(records, start=1):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
         title = ws.cell(row, 1, f"2.{idx} {record['result_en']}")
         title.font = Font(name=DEFAULT_FONT_NAME, size=12, bold=True)
-        title.fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         title.alignment = Alignment(horizontal="left", vertical="center")
-        style_range(ws, row, row, 1, 3)
+        style_range(ws, row, row, 1, 1)
 
         ws.cell(row + 1, 1, "")
         ws.cell(row + 1, 2, "文字描述")
@@ -960,7 +992,6 @@ def fill_relation(ws, records: list[dict]) -> None:
         ws.row_dimensions[row + 2].height = 500
         for rr in (row + 1, row + 2):
             ws.cell(rr, 2).font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
-            ws.cell(rr, 2).fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         style_range(ws, row + 1, row + 2, 1, 3)
         ws.cell(row + 1, 3).alignment = Alignment(vertical="top", wrap_text=True)
         if idx < len(records):
@@ -996,18 +1027,15 @@ def fill_result_detail(ws, records: list[dict]) -> None:
     headers = ["", "字段中文名", "字段英文名", "字段类型", "默认", "不可为空", "唯一", "字段注释"]
     row = 1
     for idx, record in enumerate(records, start=1):
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
         cell = ws.cell(row, 1, f"4.{idx} {record['result_cn']}")
+        style_range(ws, row, row, 1, 1)
         cell.font = Font(name=DEFAULT_FONT_NAME, size=12, bold=True)
-        cell.fill = PatternFill("solid", fgColor=DEFAULT_HIGHLIGHT_FILL)
         cell.alignment = Alignment(horizontal="left", vertical="center")
-        style_range(ws, row, row, 1, 8)
 
-        ws.merge_cells(start_row=row + 1, start_column=2, end_row=row + 1, end_column=8)
-        ws.cell(row + 1, 2, record["result_en"])
-        ws.cell(row + 1, 2).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row + 1, 2).font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
-        style_range(ws, row + 1, row + 1, 1, 8)
+        style_range(ws, row + 1, row + 1, 2, 2)
+        result_name_cell = ws.cell(row + 1, 2, record["result_en"])
+        result_name_cell.alignment = Alignment(horizontal="center", vertical="center")
+        result_name_cell.font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
 
         for c_idx, header in enumerate(headers, start=1):
             c = ws.cell(row + 2, c_idx, header)
@@ -1043,6 +1071,10 @@ def fill_result_detail(ws, records: list[dict]) -> None:
                 ws.cell(rr, c_idx, value)
         end_row = row + 2 + len(fields)
         style_range(ws, row, end_row, 1, 8)
+        cell.font = Font(name=DEFAULT_FONT_NAME, size=12, bold=True)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        result_name_cell.font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)
+        result_name_cell.alignment = Alignment(horizontal="center", vertical="center")
         for rr in range(row + 3, end_row + 1):
             ws.cell(rr, 1).fill = PatternFill("solid", fgColor="FFFFFF")
         row = end_row + 2
