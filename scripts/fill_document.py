@@ -9,7 +9,7 @@
     python fill_document.py --service-dir "N08-数据报表服务" --material-type "02-数据报表_设计文档" --excel "台账清单.xlsx" --template "模板.docx" --catalog "数据目录数据.xlsx" --output "输出.docx"
 """
 
-import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json
+import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -310,6 +310,21 @@ def report_names_from_business_text(row, limit=3):
     if parsed_names:
         return display_name_list(parsed_names, "相关报表成果", limit=limit)
     return "报表成果"
+
+
+def deliverable_report_names_from_row(row, fallback="本次交付材料", limit=3):
+    names = collect_attachment_report_names(row.get("_attachment_names") or [])
+    if names:
+        return display_name_list(names, fallback, limit=limit)
+    raw_values = []
+    for key in ("交付物", "交付附件"):
+        value = row.get(key)
+        if value:
+            raw_values.extend(re.split(r"[\n；;]+", str(value)))
+    names = collect_attachment_report_names(raw_values)
+    if names:
+        return display_name_list(names, fallback, limit=limit)
+    return fallback
 
 
 DELIVERY_SUFFIX_CATEGORY = {
@@ -725,7 +740,7 @@ def infer_data_report_content(row, catalog_codes, catalog_context=None):
     subject = infer_data_report_subject(row)
     resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
     field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
-    report_hint = report_names_from_business_text(row, limit=2)
+    report_hint = deliverable_report_names_from_row(row, fallback="本次交付报表", limit=2)
     focus = data_report_business_focus(row)
     variants = [
         f"数据内容以{resource_hint}为主要来源，保留{field_hint}等字段，并按{focus}口径整理为{report_hint}。",
@@ -737,14 +752,8 @@ def infer_data_report_content(row, catalog_codes, catalog_context=None):
 
 
 def infer_data_report_result_form(row):
-    attachment_names = collect_attachment_report_names(row.get("_attachment_names") or [])
-    report_names = display_name_list(attachment_names, "", limit=3)
-    if not report_names:
-        parsed_names = [cn or en for cn, en in parse_report_list(row.get("统计分析结果表清单", ""))]
-        report_names = display_name_list(parsed_names, "", limit=3)
-    if not report_names:
-        report_names = infer_data_report_subject(row)
-    return ensure_cn_period(f"最终形成{report_names}报表成果，随文档保留统计结果、字段口径、数据来源清单和必要截图材料")
+    report_names = deliverable_report_names_from_row(row, fallback="本次交付材料", limit=3)
+    return ensure_cn_period(f"最终形成{report_names}，随文档保留统计结果、字段口径、数据来源清单和必要截图材料")
 
 
 def infer_data_report_processing_logic(row, catalog_codes):
@@ -752,9 +761,9 @@ def infer_data_report_processing_logic(row, catalog_codes):
     code_hint = join_catalog_codes(catalog_codes, "相关数据目录", limit=2)
     program_hint = data_report_program_labels(row)
     field_hint = data_report_field_comment_hint(row)
-    return ensure_cn_period(
+    return ensure_cn_period(sanitize_stats_logic_text(
         f"根据{subject}的统计口径，读取{code_hint}并通过{program_hint}完成数据抽取、字段整理、统计汇总和结果写入{field_hint}"
-    )
+    ))
 
 
 def _is_template_like(text):
@@ -798,7 +807,8 @@ def normalize_data_report_text_fields(row, catalog_context=None):
 
     processing_logic = normalized.get("数据处理逻辑", "")
     if _is_template_like(processing_logic):
-        normalized["数据处理逻辑"] = infer_data_report_processing_logic(normalized, catalog_codes)
+        processing_logic = infer_data_report_processing_logic(normalized, catalog_codes)
+    normalized["数据处理逻辑"] = sanitize_stats_logic_text(processing_logic)
 
     return normalized
 
@@ -952,6 +962,87 @@ try {{
     return crop_and_normalize_image(target)
 
 
+def excel_com_used_range_to_png(source, target):
+    source = Path(source)
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+$excel = $null
+$wb = $null
+$chartObj = $null
+try {{
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  $wb = $excel.Workbooks.Open('{quote_ps_path(source)}', 0, $true)
+  $bestWs = $null
+  $bestScore = -1
+  foreach ($sheet in $wb.Worksheets) {{
+    $used = $sheet.UsedRange
+    if ($used -eq $null) {{ continue }}
+    $rows = [int]$used.Rows.Count
+    $cols = [int]$used.Columns.Count
+    if ($rows -lt 1 -or $cols -lt 1) {{ continue }}
+    $score = $rows * $cols
+    if ($score -gt $bestScore) {{
+      $bestScore = $score
+      $bestWs = $sheet
+    }}
+  }}
+  if ($bestWs -eq $null) {{ throw 'no used range' }}
+  $bestWs.Activate()
+  if ($excel.ActiveWindow -ne $null) {{ $excel.ActiveWindow.Zoom = 180 }}
+  $used = $bestWs.UsedRange
+  $firstRow = [int]$used.Row
+  $firstCol = [int]$used.Column
+  $rows = [int]$used.Rows.Count
+  $cols = [int]$used.Columns.Count
+  $rowCap = [Math]::Min($rows, 32)
+  if ($rows -le 8) {{
+    $colCap = [Math]::Min($cols, 16)
+  }} elseif ($cols -le 8) {{
+    $colCap = $cols
+  }} else {{
+    $colCap = [Math]::Min($cols, 9)
+  }}
+  $range = $bestWs.Range($bestWs.Cells($firstRow, $firstCol), $bestWs.Cells($firstRow + $rowCap - 1, $firstCol + $colCap - 1))
+  $range.CopyPicture(1, 2)
+  Start-Sleep -Milliseconds 700
+  $chartWidth = [Math]::Max(1200, [Math]::Min(2600, $range.Width * 2.6))
+  $chartHeight = [Math]::Max(560, [Math]::Min(1700, $range.Height * 2.6))
+  $chartObj = $bestWs.ChartObjects().Add($range.Left, $range.Top, $chartWidth, $chartHeight)
+  $chart = $chartObj.Chart
+  $chart.ChartArea.Format.Line.Visible = 0
+  $chart.ChartArea.Format.Fill.Visible = -1
+  $chart.ChartArea.Format.Fill.ForeColor.RGB = 16777215
+  $chart.Paste()
+  if ($chart.Shapes.Count -gt 0) {{
+    $shape = $chart.Shapes.Item(1)
+    $shape.LockAspectRatio = -1
+    $scale = [Math]::Min(($chartWidth - 6) / $shape.Width, ($chartHeight - 6) / $shape.Height)
+    if ($scale -gt 1) {{ $shape.Width = $shape.Width * $scale }}
+    $shape.Left = 3
+    $shape.Top = 3
+  }}
+  $chart.Export('{quote_ps_path(target)}', 'PNG')
+}} finally {{
+  if ($chartObj -ne $null) {{ $chartObj.Delete() }}
+  if ($wb -ne $null) {{ $wb.Close($false) }}
+  if ($excel -ne $null) {{ $excel.Quit() }}
+}}
+"""
+    try:
+        proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=120)
+    except Exception:
+        return False
+    if proc.returncode != 0 or not target.exists() or target.stat().st_size == 0:
+        return False
+    return crop_and_normalize_image(target)
+
+
 def office_export_to_pdf(source, target):
     source = Path(source)
     target = Path(target)
@@ -1042,6 +1133,8 @@ def generate_attachment_screenshot_bytes(files, work_dir, row_number):
     suffix = source.suffix.lower()
     if suffix == ".xlsx" and excel_range_to_png(source, image_path):
         return image_path.read_bytes()
+    if suffix in {".xlsx", ".xls"} and excel_com_used_range_to_png(source, image_path):
+        return image_path.read_bytes()
     pdf_path = source if suffix == ".pdf" else work_dir / f"row{int(row_number):02d}_{safe_file_name(source.stem)}.pdf"
     if suffix != ".pdf" and not office_export_to_pdf(source, pdf_path):
         return None
@@ -1053,6 +1146,62 @@ def generate_attachment_screenshot_bytes(files, work_dir, row_number):
 def safe_file_name(value):
     value = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", str(value or ""))
     return value.strip(" ._") or "attachment"
+
+
+def _payload_output_name(base, suffix):
+    base = safe_file_name(base)
+    current_suffix = Path(base).suffix.lower()
+    if current_suffix:
+        return base
+    return f"{base}{suffix}"
+
+
+def _valid_deliverable_file_name(value):
+    name = ntpath.basename(str(value or "").replace("\\", "/")).strip()
+    suffix = Path(name).suffix.lower()
+    if not name or suffix not in DELIVERY_SUFFIX_CATEGORY:
+        return ""
+    if any(ch in name for ch in "\x00\r\n\t"):
+        return ""
+    return name
+
+
+def _decode_ole_native_string(raw):
+    for encoding in ("gbk", "utf-8", "latin1"):
+        try:
+            text = raw.decode(encoding).strip("\x00 ")
+        except Exception:
+            continue
+        if text:
+            return text
+    return ""
+
+
+def extract_ole10native_filename(payload):
+    candidates = []
+    for match in re.finditer(rb"[\x20-\xff]{4,}\x00", payload[:4096]):
+        text = _decode_ole_native_string(match.group(0).rstrip(b"\x00"))
+        name = _valid_deliverable_file_name(text)
+        if name and name not in candidates:
+            candidates.append(name)
+    return candidates[0] if candidates else ""
+
+
+def _office_payload_suggested_name(payload):
+    suffix = zip_office_suffix(payload)
+    if suffix != ".xlsx":
+        return ""
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            workbook_xml = zf.read("xl/workbook.xml").decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    generic = {"sheet", "sheet1", "sheet2", "sheet3", "工作表", "工作表1", "工作表2"}
+    for raw_name in re.findall(r'<sheet[^>]*name="([^"]+)"', workbook_xml):
+        name = html.unescape(raw_name).strip()
+        if name and name.lower() not in generic:
+            return name
+    return ""
 
 
 def zip_office_suffix(payload):
@@ -1074,11 +1223,11 @@ def zip_office_suffix(payload):
 def write_detected_payload(row_dir, base, payload, files):
     if payload.startswith(b"PK\x03\x04"):
         suffix = zip_office_suffix(payload)
-        target = row_dir / f"{safe_file_name(base)}{suffix}"
+        target = row_dir / _payload_output_name(base, suffix)
         target.write_bytes(payload)
         files.append(target)
     elif payload.startswith(b"%PDF"):
-        target = row_dir / f"{safe_file_name(base)}.pdf"
+        target = row_dir / _payload_output_name(base, ".pdf")
         target.write_bytes(payload)
         files.append(target)
 
@@ -1169,7 +1318,8 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir, col_nu
                 files = result.setdefault(row, [])
                 if data.startswith(b"PK\x03\x04"):
                     suffix = zip_office_suffix(data)
-                    final = row_dir / f"deliverable_row{row:02d}{suffix}"
+                    suggested_name = _office_payload_suggested_name(data) or f"deliverable_row{row:02d}"
+                    final = row_dir / _payload_output_name(suggested_name, suffix)
                     raw_path.replace(final)
                     files.append(final)
                     if suffix == ".zip":
@@ -1183,6 +1333,11 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir, col_nu
                             except Exception:
                                 continue
                             stream_name = safe_file_name("_".join(stream))
+                            native_name = extract_ole10native_filename(payload) if "Ole10Native" in stream_name else ""
+                            native_payload = extract_ole_native_payload(payload) if native_name else None
+                            if native_name and native_payload:
+                                write_detected_payload(row_dir, native_name, native_payload, files)
+                                continue
                             if stream_name.lower() == "workbook":
                                 workbook_path = row_dir / f"{stream_name}.xls"
                                 workbook_path.write_bytes(data)
@@ -1190,7 +1345,8 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir, col_nu
                             write_detected_payload(row_dir, stream_name, payload, files)
                             nested = extract_ole_native_payload(payload)
                             if nested and nested != payload:
-                                write_detected_payload(row_dir, f"{stream_name}_embedded", nested, files)
+                                suggested_name = native_name or _office_payload_suggested_name(nested) or f"{stream_name}_embedded"
+                                write_detected_payload(row_dir, suggested_name, nested, files)
                         ole.close()
                     except Exception:
                         pass
@@ -1956,11 +2112,25 @@ def clean_attachment_report_name(value):
     return stem or name
 
 
+def _attachment_report_entry(value):
+    name = Path(str(value or "")).name.strip()
+    report_name = clean_attachment_report_name(value)
+    if not report_name:
+        return "", ""
+    return report_name, Path(name).suffix.lower()
+
+
 def collect_attachment_report_names(files):
-    names = []
+    entries = []
     for path in files:
-        report_name = clean_attachment_report_name(path)
-        if report_name and report_name not in names:
+        report_name, suffix = _attachment_report_entry(path)
+        if report_name:
+            entries.append((report_name, suffix))
+    if any(suffix not in {".zip", ".rar", ".7z"} for _name, suffix in entries):
+        entries = [entry for entry in entries if entry[1] not in {".zip", ".rar", ".7z"}]
+    names = []
+    for report_name, _suffix in entries:
+        if report_name not in names:
             names.append(report_name)
     return names
 
@@ -2109,12 +2279,11 @@ def extract_indicator_field_comments_from_program(program):
 
 def build_data_report_indicator_rows(programs, attachment_names):
     report_names = collect_attachment_report_names(attachment_names)
+    if not report_names:
+        report_names = ["本次交付材料"]
     rows = []
     for index, program in enumerate(programs or []):
-        if report_names:
-            report_name = report_names[index % len(report_names)]
-        else:
-            report_name = program.get("program_cn") or program.get("program_en") or "报表成果"
+        report_name = report_names[index % len(report_names)]
         field_comments = program.get("field_comments")
         if field_comments is None:
             field_comments = extract_indicator_field_comments_from_program(program)

@@ -383,11 +383,13 @@ class DataReportRegressionTest(unittest.TestCase):
                 return True
 
             with mock.patch.object(module, "excel_range_to_png", fail_excel_range_to_png):
-                with mock.patch.object(module, "office_export_to_pdf", fake_office_export_to_pdf):
-                    with mock.patch.object(module, "render_pdf_first_page", fake_render_pdf_first_page):
-                        preview = module.generate_attachment_screenshot_bytes([source], temp, row_number=2)
+                with mock.patch.object(module, "excel_com_used_range_to_png", return_value=False) as range_preview:
+                    with mock.patch.object(module, "office_export_to_pdf", fake_office_export_to_pdf):
+                        with mock.patch.object(module, "render_pdf_first_page", fake_render_pdf_first_page):
+                            preview = module.generate_attachment_screenshot_bytes([source], temp, row_number=2)
 
         self.assertEqual(preview, PNG_1X1)
+        range_preview.assert_called_once()
 
     def test_read_data_report_design_groups_merges_work_order_program_rows(self):
         module = load_fill_document_module()
@@ -568,10 +570,11 @@ class DataReportRegressionTest(unittest.TestCase):
             ["deliverable_row03.xlsx"],
         )
 
-        self.assertEqual(rows[0][0], "便捷共享目录信息统计")
+        self.assertEqual(rows[0][0], "本次交付材料")
         self.assertNotIn("deliverable_row", rows[0][0])
+        self.assertNotIn("便捷共享目录信息统计", rows[0][0])
 
-    def test_result_form_uses_program_names_when_attachment_names_are_generated_fallbacks(self):
+    def test_result_form_uses_neutral_delivery_name_when_attachment_names_are_generated_fallbacks(self):
         module = load_fill_document_module()
 
         text = module.infer_data_report_result_form(
@@ -582,7 +585,8 @@ class DataReportRegressionTest(unittest.TestCase):
             }
         )
 
-        self.assertIn("便捷共享目录信息统计", text)
+        self.assertIn("本次交付材料", text)
+        self.assertNotIn("便捷共享目录信息统计", text)
         self.assertNotIn("deliverable_row", text)
 
     def test_office_export_success_accepts_created_output_even_with_nonzero_returncode(self):
@@ -606,6 +610,17 @@ class DataReportRegressionTest(unittest.TestCase):
 
         self.assertEqual([row[0] for row in rows], ["b1", "b2", "b1"])
         self.assertEqual({row[0] for row in rows}, {"b1", "b2"})
+
+    def test_extracts_original_name_from_ole10native_payload(self):
+        module = load_fill_document_module()
+        payload = (
+            b"\x00\x00\x00\x00\x02\x00"
+            + "原始交付物名称.xlsx".encode("gbk")
+            + b"\x00C:/Temp/original.xlsx\x00"
+            + b"PK\x03\x04fake"
+        )
+
+        self.assertEqual(module.extract_ole10native_filename(payload), "原始交付物名称.xlsx")
 
     def test_design_text_normalization_fills_new_ledger_fallback_fields(self):
         module = load_fill_document_module()
