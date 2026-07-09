@@ -9,7 +9,7 @@
     python fill_document.py --service-dir "N08-数据报表服务" --material-type "02-数据报表_设计文档" --excel "台账清单.xlsx" --template "模板.docx" --catalog "数据目录数据.xlsx" --output "输出.docx"
 """
 
-import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath
+import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath, shutil
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -312,10 +312,21 @@ def report_names_from_business_text(row, limit=3):
     return "报表成果"
 
 
-def deliverable_report_names_from_row(row, fallback="本次交付材料", limit=3):
+def work_order_title_file_name(row, fallback="交付成果"):
+    for key in ("工单标题", "工单内容"):
+        value = compact_spaces(row.get(key, ""))
+        if value:
+            name = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", value)
+            return name.strip(" ._") or fallback
+    value = compact_spaces(row.get("工单号", ""))
+    return value or fallback
+
+
+def deliverable_report_names_from_row(row, fallback="", limit=3):
+    fallback_name = work_order_title_file_name(row, fallback or "交付成果")
     names = collect_attachment_report_names(row.get("_attachment_names") or [])
     if names:
-        return display_name_list(names, fallback, limit=limit)
+        return display_name_list(names, fallback_name, limit=limit)
     raw_values = []
     for key in ("交付物", "交付附件"):
         value = row.get(key)
@@ -323,8 +334,8 @@ def deliverable_report_names_from_row(row, fallback="本次交付材料", limit=
             raw_values.extend(re.split(r"[\n；;]+", str(value)))
     names = collect_attachment_report_names(raw_values)
     if names:
-        return display_name_list(names, fallback, limit=limit)
-    return fallback
+        return display_name_list(names, fallback_name, limit=limit)
+    return fallback_name
 
 
 DELIVERY_SUFFIX_CATEGORY = {
@@ -740,7 +751,7 @@ def infer_data_report_content(row, catalog_codes, catalog_context=None):
     subject = infer_data_report_subject(row)
     resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
     field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
-    report_hint = deliverable_report_names_from_row(row, fallback="本次交付报表", limit=2)
+    report_hint = deliverable_report_names_from_row(row, limit=2)
     focus = data_report_business_focus(row)
     variants = [
         f"数据内容以{resource_hint}为主要来源，保留{field_hint}等字段，并按{focus}口径整理为{report_hint}。",
@@ -752,7 +763,7 @@ def infer_data_report_content(row, catalog_codes, catalog_context=None):
 
 
 def infer_data_report_result_form(row):
-    report_names = deliverable_report_names_from_row(row, fallback="本次交付材料", limit=3)
+    report_names = deliverable_report_names_from_row(row, limit=3)
     return ensure_cn_period(f"最终形成{report_names}，随文档保留统计结果、字段口径、数据来源清单和必要截图材料")
 
 
@@ -1220,6 +1231,23 @@ def zip_office_suffix(payload):
     return suffix
 
 
+ARCHIVE_MEMBER_SUFFIXES = {".docx", ".doc", ".xlsx", ".xlsm", ".xls", ".pdf"}
+OLE_PAYLOAD_SIGNATURES = (
+    (b"PK\x03\x04", ".zip"),
+    (b"%PDF", ".pdf"),
+    (b"Rar!\x1a\x07\x01\x00", ".rar"),
+    (b"Rar!\x1a\x07\x00", ".rar"),
+    (b"7z\xbc\xaf\x27\x1c", ".7z"),
+)
+
+
+def _payload_signature_suffix(payload):
+    for signature, suffix in OLE_PAYLOAD_SIGNATURES:
+        if payload.startswith(signature):
+            return suffix
+    return ""
+
+
 def write_detected_payload(row_dir, base, payload, files):
     if payload.startswith(b"PK\x03\x04"):
         suffix = zip_office_suffix(payload)
@@ -1230,27 +1258,90 @@ def write_detected_payload(row_dir, base, payload, files):
         target = row_dir / _payload_output_name(base, ".pdf")
         target.write_bytes(payload)
         files.append(target)
+    else:
+        suffix = _payload_signature_suffix(payload)
+        if suffix in {".rar", ".7z"}:
+            target = row_dir / _payload_output_name(base, suffix)
+            target.write_bytes(payload)
+            files.append(target)
 
 
 def extract_ole_native_payload(payload):
-    for signature in (b"PK\x03\x04", b"%PDF"):
+    for signature, _suffix in OLE_PAYLOAD_SIGNATURES:
         index = payload.find(signature)
         if index >= 0:
             return payload[index:]
     return None
 
 
+def _external_archive_commands(path, output_dir):
+    commands = []
+    bsdtar = shutil.which("bsdtar")
+    if bsdtar:
+        commands.append([bsdtar, "-xf", str(path), "-C", str(output_dir)])
+    seven_zip = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
+    if not seven_zip:
+        common_7z = Path(os.environ.get("ProgramFiles", "")) / "NVIDIA Corporation" / "NVIDIA App" / "7z.exe"
+        if common_7z.exists():
+            seven_zip = str(common_7z)
+    if seven_zip:
+        commands.append([seven_zip, "x", "-y", f"-o{output_dir}", str(path)])
+    return commands
+
+
+def _collect_expanded_archive_members(output_dir, files):
+    output_dir = Path(output_dir)
+    try:
+        root = output_dir.resolve()
+    except Exception:
+        root = output_dir
+    for path in output_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in ARCHIVE_MEMBER_SUFFIXES:
+            continue
+        try:
+            path.resolve().relative_to(root)
+        except Exception:
+            continue
+        if path not in files:
+            files.append(path)
+
+
+def expand_archive_payloads(path, row_dir, files):
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        try:
+            with zipfile.ZipFile(path) as zf:
+                for name in zf.namelist():
+                    member_suffix = Path(name).suffix.lower()
+                    if member_suffix not in ARCHIVE_MEMBER_SUFFIXES:
+                        continue
+                    target = row_dir / "expanded" / safe_file_name(name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(zf.read(name))
+                    if target not in files:
+                        files.append(target)
+        except Exception:
+            return
+        return
+
+    if suffix not in {".rar", ".7z"}:
+        return
+    output_dir = Path(row_dir) / "expanded" / safe_file_name(path.stem)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for command in _external_archive_commands(path, output_dir):
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        except Exception:
+            continue
+        if proc.returncode == 0:
+            _collect_expanded_archive_members(output_dir, files)
+            return
+
+
 def expand_zip_payloads(path, row_dir, files):
     try:
-        with zipfile.ZipFile(path) as zf:
-            for name in zf.namelist():
-                suffix = Path(name).suffix.lower()
-                if suffix not in {".docx", ".xlsx", ".xls", ".pdf"}:
-                    continue
-                target = row_dir / "expanded" / safe_file_name(name)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(zf.read(name))
-                files.append(target)
+        expand_archive_payloads(path, row_dir, files)
     except Exception:
         return
 
@@ -1350,8 +1441,8 @@ def extract_deliverable_attachments(excel_path, row_numbers, extract_dir, col_nu
                         ole.close()
                     except Exception:
                         pass
-                    for zip_path in list(row_dir.glob("*.zip")):
-                        expand_zip_payloads(zip_path, row_dir, files)
+                    for archive_path in list(row_dir.glob("*.zip")) + list(row_dir.glob("*.rar")) + list(row_dir.glob("*.7z")):
+                        expand_archive_payloads(archive_path, row_dir, files)
     except Exception:
         return result
     return result
@@ -2277,10 +2368,10 @@ def extract_indicator_field_comments_from_program(program):
     return comments
 
 
-def build_data_report_indicator_rows(programs, attachment_names):
+def build_data_report_indicator_rows(programs, attachment_names, fallback_report_name="交付成果"):
     report_names = collect_attachment_report_names(attachment_names)
     if not report_names:
-        report_names = ["本次交付材料"]
+        report_names = [fallback_report_name or "交付成果"]
     rows = []
     for index, program in enumerate(programs or []):
         report_name = report_names[index % len(report_names)]
@@ -2626,7 +2717,11 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
             body.append(mp(rd.get("数据处理逻辑", ""), S["BT"], 480))
 
         body.append(mp("报表指标设计", S["H3"]))
-        body.append(mk_indicator_table(build_data_report_indicator_rows(rd.get("_programs", []), rd.get("_attachment_names", []))))
+        body.append(mk_indicator_table(build_data_report_indicator_rows(
+            rd.get("_programs", []),
+            rd.get("_attachment_names", []),
+            work_order_title_file_name(rd),
+        )))
 
     # Insert images
     h3s = [(i, p) for i, p in enumerate(doc.paragraphs) if p.style.name == "Heading 3"]

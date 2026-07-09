@@ -218,20 +218,38 @@ def find_order_for_anchor(row: int, col: int, meta: dict) -> str:
     return meta["row_to_order"].get(row, "")
 
 
+def embedded_payload_from_native(payload: bytes) -> bytes | None:
+    for signature in (b"PK\x03\x04", b"%PDF"):
+        index = payload.find(signature)
+        if index >= 0:
+            return payload[index:]
+    return None
+
+
 def package_stream_from_ole(data: bytes) -> bytes:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp:
         tmp.write(data)
         tmp_path = Path(tmp.name)
+    ole = None
     try:
         ole = olefile.OleFileIO(str(tmp_path))
         streams = {"/".join(parts).lower(): "/".join(parts) for parts in ole.listdir(streams=True, storages=False)}
-        if "package" not in streams:
-            raise RuntimeError(f"嵌入对象未找到 package 流，可用流：{sorted(streams.values())}")
-        payload = ole.openstream(streams["package"]).read()
-        ole.close()
-        return payload
+        if "package" in streams:
+            return ole.openstream(streams["package"]).read()
+        native_stream = next((name for key, name in streams.items() if "ole10native" in key), "")
+        if native_stream:
+            native_payload = ole.openstream(native_stream).read()
+            payload = embedded_payload_from_native(native_payload)
+            if payload:
+                return payload
+        raise RuntimeError(f"嵌入对象未找到可识别的 Office/PDF 载荷，可用流：{sorted(streams.values())}")
     finally:
-        tmp_path.unlink(missing_ok=True)
+        if ole is not None:
+            ole.close()
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
 
 def extract_self_reports(ledger_path: str | os.PathLike, meta: dict, work_dir: Path) -> dict[str, ReportData]:
@@ -277,7 +295,11 @@ def extract_self_reports(ledger_path: str | os.PathLike, meta: dict, work_dir: P
                     order = find_order_for_anchor(row, col, meta)
                     if not order:
                         continue
-                    package = package_stream_from_ole(zf.read(target))
+                    try:
+                        package = package_stream_from_ole(zf.read(target))
+                    except Exception as exc:
+                        print(f"跳过无法解析的自测报告附件: {target} ({exc})")
+                        continue
                     suffix = ".docx" if package.startswith(b"PK\x03\x04") else ".bin"
                     out = reports_dir / f"{order}_{Path(target).stem}{suffix}"
                     out.write_bytes(package)
