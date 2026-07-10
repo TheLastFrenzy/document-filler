@@ -21,6 +21,14 @@ PNG_1X1 = (
     b"\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02"
     b"\xfeA\xe2!Q\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+BANNED_FIXED_ENDINGS = (
+    "目录代码只列部分时，用“等目录”说明范围，避免看成全部目录",
+    "归档时按工单、统计时间段和报表主题放置，后续查口径能直接找到材料",
+    "数据目录或字段范围有调整的，在交付说明中单独点明",
+    "后续核对时，先看报表口径，再看目录来源，不需要重新翻附件",
+    "字段含义有变化的，在材料里留一句说明即可",
+    "如果后续还有同口径更新，沿用本次命名和目录说明即可",
+)
 
 
 def load_fill_document_module():
@@ -110,7 +118,8 @@ class DataReportRegressionTest(unittest.TestCase):
         self.assertIn("便捷共享目录信息表", normalized["数据需求"])
         self.assertIn("字段中文名", normalized["交付要求"])
         self.assertIn("目录字段空值统计", normalized["交付要求"])
-        self.assertIn("可追溯", normalized["交付要求"])
+        self.assertTrue(any(fragment in normalized["交付要求"] for fragment in ("命名", "文件名")))
+        self.assertIn("统计时间段", normalized["交付要求"])
         self.assertNotEqual(
             normalized["数据需求"],
             "本次需求围绕DIR001/000001、DIR001/000002目录开展统计整理，结合便捷共享目录信息统计确认字段口径、统计范围和结果呈现内容。",
@@ -213,10 +222,13 @@ class DataReportRegressionTest(unittest.TestCase):
         self.assertNotIn("Excel电子表格报表", normalized[2]["交付要求"])
         self.assertNotIn("Word文档说明材料", normalized[2]["交付要求"])
         for item in normalized:
+            for banned in BANNED_FIXED_ENDINGS:
+                self.assertNotIn(banned, item["数据需求"])
+                self.assertNotIn(banned, item["交付要求"])
             delivery = item["交付要求"]
             self.assertNotIn("交付物后缀显示", delivery)
             self.assertNotIn("格式提交", delivery)
-            self.assertIn("命名", delivery)
+            self.assertTrue(any(fragment in delivery for fragment in ("命名", "文件名")))
             self.assertIn("统计时间段", delivery)
 
     def test_delivery_format_wording_uses_actual_attachment_suffixes_only(self):
@@ -245,7 +257,11 @@ class DataReportRegressionTest(unittest.TestCase):
         self.assertIn("PDF版定稿或签收材料", pdf_delivery)
         self.assertNotIn("Excel电子表格报表", no_suffix_delivery)
         self.assertNotIn("Word文档说明材料", no_suffix_delivery)
-        self.assertIn("交付材料按实际附件内容整理", no_suffix_delivery)
+        self.assertTrue(
+            any(fragment in no_suffix_delivery for fragment in ("实际附件内容", "实际交付物", "附件格式不单独预设"))
+        )
+        self.assertTrue(any(fragment in no_suffix_delivery for fragment in ("命名", "文件名")))
+        self.assertIn("统计时间段", no_suffix_delivery)
         for delivery in [excel_delivery, mixed_delivery, pdf_delivery, no_suffix_delivery]:
             self.assertNotIn("交付物后缀显示", delivery)
             self.assertNotIn("格式提交", delivery)
@@ -568,13 +584,13 @@ class DataReportRegressionTest(unittest.TestCase):
         rows = module.build_data_report_indicator_rows(
             [{"program_cn": "便捷共享目录信息统计", "program_en": "BGT_REPORT", "field_comments": ["目录名称"]}],
             ["deliverable_row03.xlsx"],
+            "便捷共享目录信息统计",
         )
 
-        self.assertEqual(rows[0][0], "本次交付材料")
+        self.assertEqual(rows[0][0], "便捷共享目录信息统计")
         self.assertNotIn("deliverable_row", rows[0][0])
-        self.assertNotIn("便捷共享目录信息统计", rows[0][0])
 
-    def test_result_form_uses_neutral_delivery_name_when_attachment_names_are_generated_fallbacks(self):
+    def test_result_form_uses_work_order_title_when_attachment_names_are_generated_fallbacks(self):
         module = load_fill_document_module()
 
         text = module.infer_data_report_result_form(
@@ -585,8 +601,7 @@ class DataReportRegressionTest(unittest.TestCase):
             }
         )
 
-        self.assertIn("本次交付材料", text)
-        self.assertNotIn("便捷共享目录信息统计", text)
+        self.assertIn("便捷共享目录信息统计", text)
         self.assertNotIn("deliverable_row", text)
 
     def test_office_export_success_accepts_created_output_even_with_nonzero_returncode(self):

@@ -9,7 +9,7 @@
     python fill_document.py --service-dir "N08-数据报表服务" --material-type "02-数据报表_设计文档" --excel "台账清单.xlsx" --template "模板.docx" --catalog "数据目录数据.xlsx" --output "输出.docx"
 """
 
-import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath, shutil
+import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath, shutil, hashlib
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -257,7 +257,10 @@ def text_variant_index(row, catalog_codes, size, salt=""):
             salt,
         ]
     )
-    return sum(ord(ch) for ch in seed) % size if size else 0
+    if not size:
+        return 0
+    digest = hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()
+    return int(digest[:12], 16) % size
 
 
 def extract_data_report_codes(text, include_plain_numbers=True, limit=None):
@@ -409,14 +412,25 @@ def delivery_naming_sentence(row):
         naming_basis = "工单编号、接口编号、统计时间段和报表主题"
     else:
         naming_basis = "工单编号、统计时间段和报表主题"
-    return f"文件命名应对应{naming_basis}，保留可追溯线索。"
+    variants = [
+        f"文件命名对应{naming_basis}。",
+        f"文件名按{naming_basis}组织。",
+        f"命名中保留{naming_basis}，不要只使用泛化附件名。",
+        f"按{naming_basis}命名。",
+    ]
+    return variants[text_variant_index(row, [], len(variants), "delivery_naming")]
 
 
 def delivery_format_sentence(row):
     categories = delivery_format_categories(row)
     naming = delivery_naming_sentence(row)
     if not categories:
-        return f"交付材料按实际附件内容整理，{naming}"
+        variants = [
+            f"交付材料按实际附件内容整理，{naming}",
+            f"未识别到明确文件后缀时，以实际附件内容为准，{naming}",
+            f"附件格式不单独预设，按实际交付物整理，{naming}",
+        ]
+        return variants[text_variant_index(row, [], len(variants), "delivery_format_empty")]
     phrases = []
     if "excel" in categories:
         phrases.append("Excel电子表格报表")
@@ -430,7 +444,13 @@ def delivery_format_sentence(row):
         phrases.append("图片类截图或佐证材料")
     if "text" in categories:
         phrases.append("文本类补充清单")
-    return f"交付成果包括{'、'.join(phrases)}，{naming}"
+    format_hint = "、".join(phrases)
+    variants = [
+        f"交付成果包括{format_hint}，{naming}",
+        f"交付时提供{format_hint}，{naming}",
+        f"本次交付物按{format_hint}整理，{naming}",
+    ]
+    return variants[text_variant_index(row, [], len(variants), "delivery_format")]
 
 
 def catalog_resource_labels(catalog_codes, catalog_context=None, limit=3):
@@ -568,17 +588,25 @@ def infer_data_report_requirement(row, catalog_codes, catalog_context=None):
     resource_hint = catalog_resource_labels(catalog_codes, catalog_context, limit=3)
     field_hint = data_report_requirement_field_hint(row, catalog_codes, catalog_context, limit=6)
     report_hint = report_names_from_business_text(row, limit=3)
-    endings = [
-        "涉及多张目录的，报表中应保留目录代码和资源名称，后续核对口径时能直接追到来源。",
-        "同一报表跨目录取数时，应写清目录来源和字段口径，避免验收时只看到汇总值。",
-        "统计周期、筛选范围和更新时间要能在材料中找到依据，便于业务方复核。",
-        "对口径调整或字段缺失的情况，文档中应写明处理方式，避免后续重复确认。",
+    openings = [
+        f"围绕{subject}，需取用{resource_hint}，整理{field_hint}等字段，形成{report_hint}。",
+        f"{subject}涉及的统计口径以{resource_hint}为主要依据，材料中需列明{field_hint}等字段的来源和含义，并整理为{report_hint}。",
+        f"本工单先确认{resource_hint}的目录范围，再按{subject}整理{field_hint}等字段，产出{report_hint}。",
+        f"数据侧重点是把{resource_hint}中的{field_hint}等字段和{subject}的统计范围对应起来，输出{report_hint}。",
+        f"报表成果为{report_hint}，数据来源和字段口径应能落到{resource_hint}中的{field_hint}等字段上。",
     ]
-    ending = endings[text_variant_index(row, catalog_codes, len(endings), "requirement")]
-    return (
-        f"本次数据需求基于{resource_hint}，围绕{subject}业务场景，梳理{field_hint}等关键字段，"
-        f"明确统计范围和结果口径，形成{report_hint}。数据内容应覆盖资源名称、目录代码、字段列、"
-        f"统计结果和更新时间等可核验信息。{ending}"
+    details = [
+        "统计周期、筛选条件、更新时间和结果口径要写清楚。",
+        "报表中保留资源名称、目录代码、字段列和统计结果，不只保留汇总值。",
+        "跨目录取数的，目录来源和字段口径要在同一份说明里对应起来。",
+        "涉及口径调整或字段缺失的，直接说明处理方式。",
+        "同一批报表里如果有多种口径，按报表或字段分别说明。",
+    ]
+    return "".join(
+        [
+            openings[text_variant_index(row, catalog_codes, len(openings), "requirement_opening")],
+            details[text_variant_index(row, catalog_codes, len(details), "requirement_detail")],
+        ]
     )
 
 
@@ -588,17 +616,24 @@ def infer_data_report_delivery(row, catalog_codes, catalog_context=None):
     subject = infer_data_report_subject(row)
     report_hint = report_names_from_business_text(row, limit=3)
     program_hint = data_report_program_labels(row, limit=3)
-    endings = [
-        "文件归档时按工单和报表主题归类，后续查找口径时不需要再反查原始附件。",
-        "材料提交后应能直接对应到工单、目录和报表成果，便于验收归档。",
-        "业务方拿到材料后可按统计周期继续更新，不需要重新整理目录来源。",
-        "涉及接口口径调整的，文件名和说明中应保留版本线索，便于后续管理。",
+    openings = [
+        f"交付材料包括{report_hint}、数据目录清单、字段口径说明和必要附件。",
+        f"本工单交付{report_hint}，同时给出目录来源、字段口径和附件说明。",
+        f"交付物以{report_hint}为主，补充目录清单、字段说明和必要附件。",
+        f"材料整理时，将{report_hint}、目录来源和字段口径放在同一套交付资料里。",
     ]
-    ending = endings[text_variant_index(row, catalog_codes, len(endings), "delivery")]
-    return (
-        f"交付材料包括{report_hint}、涉及数据目录清单、字段口径说明和必要附件。{delivery_format_sentence(row)}"
-        f"验收时对照{resource_hint}中的{field_hint}等字段、{program_hint}处理结果与{subject}业务说明，确认统计范围、"
-        f"字段口径、结果呈现和附件内容一致。{ending}"
+    checks = [
+        f"验收时按{resource_hint}中的{field_hint}等字段和{program_hint}处理结果，对照{subject}业务说明确认统计范围。",
+        f"{field_hint}等字段的口径说明需能对应到{program_hint}和{resource_hint}。",
+        f"统计范围、字段口径和结果呈现以{subject}业务说明为准，并与{resource_hint}保持对应。",
+        f"目录来源、{field_hint}等字段和{program_hint}处理结果要能相互对上，避免只按附件名称判断。",
+    ]
+    return "".join(
+        [
+            openings[text_variant_index(row, catalog_codes, len(openings), "delivery_opening")],
+            delivery_format_sentence(row),
+            checks[text_variant_index(row, catalog_codes, len(checks), "delivery_check")],
+        ]
     )
 
 
