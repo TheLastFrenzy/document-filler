@@ -46,6 +46,43 @@ def content_bbox(path: Path):
 
 
 class DataReportRegressionTest(unittest.TestCase):
+    def test_match_images_to_cells_accepts_wps_picture_names(self):
+        module = load_fill_document_module()
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(["服务目录", "上线交付截图1", "使用记录截图1"])
+        sheet.append(["N08-数据报表服务", '=DISPIMG("图片 1",1)', '=DISPIMG("图片 2(1)",1)'])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "ledger.xlsx"
+            workbook.save(workbook_path)
+            matched = module.match_images_to_cells(
+                workbook_path,
+                {"图片 1": b"launch", "图片 2(1)": b"usage"},
+                ["上线交付截图1", "使用记录截图1"],
+                {2},
+            )
+
+        self.assertEqual(matched[(2, "上线交付截图1")], b"launch")
+        self.assertEqual(matched[(2, "使用记录截图1")], b"usage")
+
+    def test_merged_service_rows_are_grouped_with_the_primary_order_row(self):
+        module = load_fill_document_module()
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(["服务目录", "工单号", "上线交付截图1"])
+        sheet.append(["N08-数据报表服务", "ORDER-1", '=DISPIMG("图片 1",1)'])
+        sheet.append([None, None, '=DISPIMG("图片 2",1)'])
+        sheet.merge_cells("A2:A3")
+        sheet.merge_cells("B2:B3")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "ledger.xlsx"
+            workbook.save(workbook_path)
+            grouped = module.merged_source_rows_for_primary_rows(workbook_path, {2})
+
+        self.assertEqual(grouped, {2: [2, 3]})
+
     def test_requirement_text_adds_etc_for_partial_catalog_codes_and_sanitizes_delivery(self):
         module = load_fill_document_module()
         row = {

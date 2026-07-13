@@ -2566,7 +2566,7 @@ def extract_images_via_cellimages(excel_path):
 
 def match_images_to_cells(excel_path, img_bytes_by_name, img_cols, row_numbers):
     """Match DISPIMG formulas to images by name for given row numbers."""
-    wb = openpyxl.load_workbook(excel_path, data_only=True)
+    wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=False)
     ws = wb.active
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     result = {}
@@ -2577,13 +2577,27 @@ def match_images_to_cells(excel_path, img_bytes_by_name, img_cols, row_numbers):
             ci = headers.index(cn) + 1
             val = ws.cell(row=r, column=ci).value
             if val and 'DISPIMG' in str(val):
-                m = re.search(r'ID_([A-F0-9]+)', str(val))
+                m = re.search(r'DISPIMG\("([^"]+)"', str(val))
                 if m:
-                    iname = "ID_" + m.group(1)
+                    iname = m.group(1)
                     if iname in img_bytes_by_name:
                         result[(r, cn)] = img_bytes_by_name[iname]
     wb.close()
     return result
+
+
+def merged_source_rows_for_primary_rows(excel_path, primary_rows):
+    """Map each selected row to continuation rows in its merged service cell."""
+    wb = openpyxl.load_workbook(excel_path, data_only=False)
+    ws = wb.active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    service_col = headers.index("服务目录") + 1
+    grouped = {row: [row] for row in primary_rows}
+    for merged in ws.merged_cells.ranges:
+        if merged.min_col <= service_col <= merged.max_col and merged.min_row in grouped:
+            grouped[merged.min_row] = list(range(merged.min_row, merged.max_row + 1))
+    wb.close()
+    return grouped
 
 def load_catalog_data(catalog_path, all_codes):
     """Load resource info and field data from catalog Excel."""
@@ -2802,8 +2816,19 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
     print("提取图片...")
     imgs = extract_images_via_cellimages(excel_path)
     row_nums = set(rd["_row"] for rd in data_rows)
-    cell_imgs = match_images_to_cells(excel_path, imgs, img_cols, row_nums)
+    source_rows = merged_source_rows_for_primary_rows(excel_path, row_nums)
+    cell_imgs = match_images_to_cells(
+        excel_path, imgs, img_cols, {row for rows in source_rows.values() for row in rows}
+    )
     print(f"匹配到 {len(cell_imgs)} 张图片")
+
+    def image_refs(rd, columns):
+        return [
+            (source_row, column)
+            for source_row in source_rows.get(rd["_row"], [rd["_row"]])
+            for column in columns
+            if (source_row, column) in cell_imgs
+        ]
 
     doc = Document(template_path)
     body = doc.element.body
@@ -2902,23 +2927,23 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
     print(f"构建 {len(data_rows)} 个工单章节...")
     for rd in data_rows:
         gd = rd.get("工单内容", "")
-        launch_cols = launch_image_columns_for_row(rd, cell_imgs, ["上线交付截图1", "上线交付截图2"])
-        usage_cols = launch_image_columns_for_row(rd, cell_imgs, ["使用记录截图1", "使用记录截图2"])
+        launch_refs = image_refs(rd, ["上线交付截图1", "上线交付截图2"])
+        usage_refs = image_refs(rd, ["使用记录截图1", "使用记录截图2"])
         body.append(mp(f"{gd}的上线记录", S["Heading 1"]))
         body.append(mp("产出说明", S["Heading 2"]))
         body.append(mp(build_launch_identifier_line(rd), S["Body Text"], 480, word_wrap=True))
         body.append(mp(f"需求描述：{build_launch_requirement_description(rd)}", S["Body Text"], 480))
         body.append(mp(f"统计报表：{rd.get('报表统计次数', '')}次。", S["Normal"], 480, word_wrap=True))
         body.append(mp("上线交付截图", S["Heading 2"]))
-        if launch_cols:
-            for _ in launch_cols:
+        if launch_refs:
+            for _ in launch_refs:
                 body.append(mp("", S["Body Text"]))
         else:
             body.append(mp("截图待补充。", S["Body Text"], 480))
         body.append(mp("使用记录", S["Heading 2"]))
         body.append(mp("使用记录如下：", S["Body Text"]))
-        if usage_cols:
-            for _ in usage_cols:
+        if usage_refs:
+            for _ in usage_refs:
                 body.append(mp("", S["Body Text"]))
         else:
             body.append(mp("截图待补充。", S["Body Text"], 480))
@@ -2933,12 +2958,11 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
     for pi, p in h2s:
         if p.text.strip() == "上线交付截图":
             if gi < len(data_rows):
-                rn = data_rows[gi]["_row"]
-                for o, cn in enumerate(launch_image_columns_for_row(data_rows[gi], cell_imgs, ["上线交付截图1", "上线交付截图2"])):
+                for o, image_ref in enumerate(image_refs(data_rows[gi], ["上线交付截图1", "上线交付截图2"])):
                     tpi = pi + 1 + o
-                    if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
+                    if tpi < len(doc2.paragraphs) and image_ref in cell_imgs:
                         tp = doc2.paragraphs[tpi]
-                        image_payload = image_bytes_for_docx(cell_imgs[(rn, cn)])
+                        image_payload = image_bytes_for_docx(cell_imgs[image_ref])
                         if not image_payload:
                             continue
                         tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -2948,12 +2972,11 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
                         os.unlink(tf.name)
         elif p.text.strip() == "使用记录":
             if gi < len(data_rows):
-                rn = data_rows[gi]["_row"]
-                for o, cn in enumerate(launch_image_columns_for_row(data_rows[gi], cell_imgs, ["使用记录截图1", "使用记录截图2"])):
+                for o, image_ref in enumerate(image_refs(data_rows[gi], ["使用记录截图1", "使用记录截图2"])):
                     tpi = pi + 2 + o
-                    if tpi < len(doc2.paragraphs) and (rn, cn) in cell_imgs:
+                    if tpi < len(doc2.paragraphs) and image_ref in cell_imgs:
                         tp = doc2.paragraphs[tpi]
-                        image_payload = image_bytes_for_docx(cell_imgs[(rn, cn)])
+                        image_payload = image_bytes_for_docx(cell_imgs[image_ref])
                         if not image_payload:
                             continue
                         tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
