@@ -49,7 +49,7 @@ def make_ledger(path: Path):
 def make_new_column_ledger(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(["服务目录", "需求单号", "工单号", "工单标题", "结果表清单", "03-数据统计分析_测试文档_工单自测报告附件"])
+    ws.append(["服务目录", "需求单号", "工单号", "工单标题", "结果表清单", "自测报告附件"])
     ws.append(["N08-数据统计分析", "REQ-1", "WO-1", "新版工单标题", "结果表一 RESULT_ONE", None])
     wb.save(path)
 

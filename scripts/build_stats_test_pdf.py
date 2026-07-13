@@ -44,10 +44,11 @@ if sys.platform == "win32":
 
 
 RESULT_HEADER = "统计分析结果表清单"
-ATTACHMENT_HEADER = "03-数据统计分析_测试文档_工单自测报告附件"
+ATTACHMENT_HEADER = "自测报告附件"
 LEDGER_COLUMN_ALIASES = {
     "工单内容": ("工单内容", "工单标题"),
     RESULT_HEADER: (RESULT_HEADER, "结果表清单"),
+    ATTACHMENT_HEADER: (ATTACHMENT_HEADER, "03-数据统计分析_测试文档_工单自测报告附件"),
 }
 
 SECTION_LABELS = [
@@ -193,7 +194,7 @@ def load_ledger_programs(ledger_path: str | os.PathLike, service_dir: str):
     if not programs:
         raise ValueError(f"未找到匹配数据: 服务目录={service_dir}")
     meta = {
-        "attach_col": hmap[ATTACHMENT_HEADER],
+        "attach_col": header_col(hmap, ATTACHMENT_HEADER),
         "ranges": ranges,
         "row_to_order": {program.row: program.order for program in programs},
         "order_row_spans": {order: (items[0].row, items[-1].row) for order, items in groups.items()},
