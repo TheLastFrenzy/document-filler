@@ -8,6 +8,7 @@ from unittest import mock
 
 import openpyxl
 from docx import Document
+from docx.oxml.ns import qn
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,8 +59,11 @@ def make_api_ledger(path: Path):
     return path
 
 
-def add_parameter_table(document, headers, rows):
+def add_parameter_table(document, headers, rows, widths=None):
     table = document.add_table(rows=1, cols=len(headers))
+    if widths:
+        for grid_column, width in zip(table._tbl.tblGrid.gridCol_lst, widths):
+            grid_column.set(qn("w:w"), str(width))
     for index, header in enumerate(headers):
         table.rows[0].cells[index].text = header
     for values in rows:
@@ -103,6 +107,7 @@ def make_self_report(path: Path):
         document,
         ["参数", "参数说明", "是否必选", "类型"],
         [["custNum", "业务站点号", "是", "String"]],
+        [1400, 3600, 1200, 1800],
     )
     document.add_paragraph("测试结果：符合规范要求，测试通过。")
     document.add_paragraph("输出参数")
@@ -247,6 +252,7 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertEqual([group.label for group in item.input_groups], ["请求头", "请求体"])
         self.assertEqual(item.input_groups[0].headers, ["参数", "参数说明", "是否必选"])
         self.assertEqual(item.input_groups[1].rows[0], ["custNum", "业务站点号", "是", "String"])
+        self.assertEqual(item.input_groups[1].column_widths, [1400, 3600, 1200, 1800])
         self.assertEqual(item.output_groups[0].rows[0][0], "bizSerialNum")
 
     def test_read_ole_anchors_resolves_vml_position_and_embedding_payload(self):
@@ -261,6 +267,25 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertEqual(len(anchors), 1)
         self.assertEqual((anchors[0].row, anchors[0].column), (2, 8))
         self.assertEqual(anchors[0].payload, b"embedded-ole-payload")
+
+    def test_parameter_table_scales_source_widths_and_keeps_data_text_left_aligned(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.shared.word_sections import table_element
+
+        table = table_element(
+            ["参数", "参数说明", "是否必选", "类型", "备注"],
+            [["phoneNumber", "手机号码", "否", "String", "线上业务可填写手机号码"]],
+            [1267, 3117, 518, 913, 2905],
+        )
+        widths = [int(column.get(qn("w:w"))) for column in table.tblGrid.gridCol_lst]
+        data_row = table.findall(qn("w:tr"))[1]
+        description_cell = data_row.findall(qn("w:tc"))[1]
+
+        self.assertEqual(sum(widths), 9000)
+        self.assertGreater(widths[1], widths[0])
+        self.assertGreater(widths[4], widths[0])
+        self.assertIsNone(description_cell.find(".//" + qn("w:jc")))
 
     def test_build_api_requirement_document_replaces_dynamic_sections_and_preserves_static_content(self):
         if str(SCRIPTS) not in sys.path:

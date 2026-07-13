@@ -45,7 +45,15 @@ def read_docx_blocks(path):
             table = Table(child, document)
             matrix = [[cell.text.strip() for cell in row.cells] for row in table.rows]
             if matrix:
-                blocks.append({"type": "table", "headers": matrix[0], "rows": matrix[1:]})
+                grid = table._tbl.tblGrid
+                widths = (
+                    [int(column.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w")) for column in grid.gridCol_lst]
+                    if grid is not None
+                    else []
+                )
+                blocks.append(
+                    {"type": "table", "headers": matrix[0], "rows": matrix[1:], "column_widths": widths}
+                )
     return blocks
 
 
@@ -75,6 +83,7 @@ def _parameter_groups(blocks):
                 label=label,
                 headers=list(block["headers"]),
                 rows=[list(row) for row in block["rows"]],
+                column_widths=list(block.get("column_widths", [])),
             )
         )
         label = ""
@@ -211,12 +220,12 @@ def _build_api_section(orders, styles):
             for group in interface.input_groups:
                 if group.label:
                     elements.append(paragraph_element(f"{group.label}：", styles["Body Text"]))
-                elements.append(table_element(group.headers, group.rows))
+                elements.append(table_element(group.headers, group.rows, group.column_widths or None))
             elements.append(paragraph_element("接口输出参数：", styles["Normal"]))
             for group in interface.output_groups:
                 if group.label:
                     elements.append(paragraph_element(f"{group.label}：", styles["Body Text"]))
-                elements.append(table_element(group.headers, group.rows))
+                elements.append(table_element(group.headers, group.rows, group.column_widths or None))
     return elements
 
 

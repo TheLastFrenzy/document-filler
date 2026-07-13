@@ -88,7 +88,7 @@ def _table_borders(properties):
     properties.append(borders)
 
 
-def _cell_element(text, width, bold=False, shaded=False):
+def _cell_element(text, width, bold=False, shaded=False, align=None):
     cell = OxmlElement("w:tc")
     properties = OxmlElement("w:tcPr")
     cell_width = OxmlElement("w:tcW")
@@ -113,11 +113,12 @@ def _cell_element(text, width, bold=False, shaded=False):
     cell.append(properties)
 
     paragraph = OxmlElement("w:p")
-    paragraph_properties = OxmlElement("w:pPr")
-    alignment = OxmlElement("w:jc")
-    alignment.set(qn("w:val"), "center")
-    paragraph_properties.append(alignment)
-    paragraph.append(paragraph_properties)
+    if align:
+        paragraph_properties = OxmlElement("w:pPr")
+        alignment = OxmlElement("w:jc")
+        alignment.set(qn("w:val"), align)
+        paragraph_properties.append(alignment)
+        paragraph.append(paragraph_properties)
     run = OxmlElement("w:r")
     run_properties = OxmlElement("w:rPr")
     fonts = OxmlElement("w:rFonts")
@@ -126,7 +127,7 @@ def _cell_element(text, width, bold=False, shaded=False):
     fonts.set(qn("w:eastAsia"), "宋体")
     run_properties.append(fonts)
     size = OxmlElement("w:sz")
-    size.set(qn("w:val"), "21")
+    size.set(qn("w:val"), "20")
     run_properties.append(size)
     if bold:
         run_properties.append(OxmlElement("w:b"))
@@ -148,6 +149,12 @@ def table_element(headers, rows, column_widths=None):
     if column_widths is None:
         base = 9000 // column_count
         column_widths = [base] * column_count
+        column_widths[-1] += 9000 - sum(column_widths)
+    else:
+        source_total = sum(int(value) for value in column_widths)
+        if source_total <= 0 or len(column_widths) != column_count:
+            raise ValueError("参数表列宽与表头不匹配")
+        column_widths = [round(int(value) * 9000 / source_total) for value in column_widths]
         column_widths[-1] += 9000 - sum(column_widths)
 
     table = OxmlElement("w:tbl")
@@ -177,7 +184,7 @@ def table_element(headers, rows, column_widths=None):
     row_properties.append(OxmlElement("w:tblHeader"))
     header_row.append(row_properties)
     for index, header in enumerate(headers):
-        header_row.append(_cell_element(header, column_widths[index], bold=True, shaded=True))
+        header_row.append(_cell_element(header, column_widths[index], bold=True, shaded=True, align="center"))
     table.append(header_row)
 
     for source_row in rows:

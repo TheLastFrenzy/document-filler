@@ -21,6 +21,7 @@ class ParameterGroup:
     label: str
     headers: list[str]
     rows: list[list[str]]
+    column_widths: list[int] = field(default_factory=list)
 
 
 @dataclass
