@@ -43,6 +43,12 @@ from docx.oxml import OxmlElement
 from PIL import Image
 import struct
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from materials.registry import get_material_spec
+
 HEADER_BG = "F1F1F1"
 
 MATERIAL_OUTPUT_EXTENSIONS = {
@@ -59,6 +65,9 @@ MATERIAL_OUTPUT_EXTENSIONS = {
 def resolve_output_path(output_path, material_type):
     output = Path(output_path)
     if output.exists() and output.is_dir():
+        spec = get_material_spec(material_type)
+        if spec:
+            return str(output / spec.default_filename)
         extension = MATERIAL_OUTPUT_EXTENSIONS.get(material_type, "")
         return str(output / f"{material_type}{extension}")
     return str(output)
