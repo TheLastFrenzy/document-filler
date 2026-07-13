@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import openpyxl
 from docx import Document
@@ -72,7 +73,23 @@ def make_self_report(path: Path):
     document.add_heading("测试目的", level=1)
     document.add_paragraph("验证接口输入输出参数。")
     document.add_heading("测试内容", level=1)
-    document.add_heading("身份认证申请接口", level=2)
+
+    document.add_heading("境外人员获取令牌接口", level=2)
+    document.add_paragraph("输入参数")
+    add_parameter_table(
+        document,
+        ["序号", "参数项", "名称"],
+        [["1", "userId", "用户ID"], ["2", "password", "密码"]],
+    )
+    document.add_paragraph("输出参数")
+    add_parameter_table(
+        document,
+        ["参数", "参数说明", "备注"],
+        [["access_token", "Token", "后续接口调用凭证"]],
+    )
+    document.add_paragraph("测试结果：符合规范要求，测试通过。")
+
+    document.add_heading("境外人员身份认证申请接口", level=2)
     document.add_paragraph("共享接口命名规范性")
     document.add_paragraph("输入参数")
     document.add_paragraph("请求头：")
@@ -96,6 +113,60 @@ def make_self_report(path: Path):
     )
     document.add_paragraph("测试结果：符合规范要求，测试通过。")
     document.add_paragraph("共享任务开发代码检查")
+
+    document.add_heading("境外人员身份认证请求接口", level=2)
+    document.add_paragraph("输入参数")
+    document.add_paragraph("请求头：")
+    add_parameter_table(
+        document,
+        ["参数", "参数说明", "是否必选"],
+        [["access_token", "访问令牌", "是"]],
+    )
+    document.add_paragraph("请求体：")
+    add_parameter_table(
+        document,
+        ["参数", "参数说明", "是否必选", "类型"],
+        [["bizSerialNum", "业务流水号", "是", "String"], ["idAuthData", "身份验证数据", "是", "Object"]],
+    )
+    document.add_paragraph("输出参数")
+    add_parameter_table(
+        document,
+        ["参数", "参数说明", "备注"],
+        [["success", "是否成功", ""], ["result", "核验结果", "四位结果数组"]],
+    )
+    document.add_paragraph("测试结果：符合规范要求，测试通过。")
+    document.save(path)
+    return path
+
+
+def make_api_template(path: Path):
+    document = Document()
+    document.add_heading("需求文档", level=1)
+    revision = document.add_table(rows=2, cols=4)
+    for index, value in enumerate(["版本", "更新人员", "更新内容", "时间"]):
+        revision.rows[0].cells[index].text = value
+    document.add_heading("业务场景", level=2)
+    document.add_paragraph("上海市大数据中心通过API接口开展公共数据共享开放。")
+    document.add_paragraph("旧业务场景内容。")
+    document.add_heading("需求说明", level=2)
+    document.add_heading("需求清单", level=2)
+    document.add_paragraph("服务周期内，共有3张需求单。")
+    demand = document.add_table(rows=2, cols=5)
+    for index, value in enumerate(["序号", "对应需求单编号", "对应工单编号", "工单内容", "涉及共享任务数量（个）"]):
+        demand.rows[0].cells[index].text = value
+    document.add_heading("OLD-WO_旧工单", level=3)
+    document.add_paragraph("需求口径：旧内容。")
+    document.add_heading("共享开放方案", level=2)
+    document.add_paragraph("STATIC_SHARED_SOLUTION_MARKER")
+    document.add_heading("API接口清单", level=2)
+    document.add_heading("企业电子票据证件号码校验接口", level=3)
+    document.add_paragraph("旧接口说明。")
+    document.add_paragraph("计划供数方式：API接口对外服务")
+    document.add_paragraph("计划更新频率：无")
+    document.add_paragraph("接口输入参数：")
+    add_parameter_table(document, ["序号", "参数名", "名称"], [["1", "old", "旧参数"]])
+    document.add_paragraph("接口输出参数：")
+    add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "oldResult", "旧结果"]])
     document.save(path)
     return path
 
@@ -136,6 +207,14 @@ class ApiRequirementTest(unittest.TestCase):
 
         self.assertEqual(Path(output).name, "01-需求文档.docx")
 
+    def test_api_requirement_nonexistent_output_directory_uses_public_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_dir = Path(temp_dir) / "结果"
+            output = module.resolve_output_path(result_dir, "01-API接口开发_需求文档")
+
+        self.assertEqual(Path(output), result_dir / "01-需求文档.docx")
+
     def test_read_api_work_orders_groups_merged_rows_and_counts_programs_once(self):
         if str(SCRIPTS) not in sys.path:
             sys.path.insert(0, str(SCRIPTS))
@@ -161,7 +240,7 @@ class ApiRequirementTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             report = make_self_report(Path(temp_dir) / "self-test.docx")
-            interfaces = [ApiInterface("身份认证申请接口", "api_apply", 2)]
+            interfaces = [ApiInterface("境外人员身份认证申请接口", "api_apply", 2)]
             parsed = parse_api_report(report, interfaces)
 
         item = parsed[0]
@@ -182,6 +261,97 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertEqual(len(anchors), 1)
         self.assertEqual((anchors[0].row, anchors[0].column), (2, 8))
         self.assertEqual(anchors[0].payload, b"embedded-ole-payload")
+
+    def test_build_api_requirement_document_replaces_dynamic_sections_and_preserves_static_content(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_requirement
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report(temp / "self-test.docx")
+            template = make_api_template(temp / "template.docx")
+            output = temp / "01-需求文档.docx"
+            with mock.patch.object(
+                api_requirement,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+                create=True,
+            ):
+                with mock.patch.object(api_requirement, "update_toc_via_com", create=True):
+                    api_requirement.build_api_requirement_document(
+                        excel_path=ledger,
+                        service_dir="N07-API接口开发",
+                        template_path=template,
+                        output_path=output,
+                    )
+
+            document = Document(output)
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+        self.assertIn("共提供3个API接口服务", text)
+        self.assertIn("WO-1_市公安局-出入境证件身份认证-共享接口", text)
+        self.assertIn("需求口径：升级离境退税掌上办平台的出入境记录校验能力。", text)
+        self.assertIn("STATIC_SHARED_SOLUTION_MARKER", text)
+        self.assertIn("境外人员获取令牌接口", text)
+        self.assertIn("境外人员身份认证申请接口", text)
+        self.assertIn("境外人员身份认证请求接口", text)
+        self.assertIn("计划供数方式：API接口对外服务", text)
+        self.assertNotIn("企业电子票据证件号码校验接口", text)
+        self.assertNotIn("旧接口说明", text)
+
+    def test_purpose_text_is_grounded_and_avoids_banned_ai_phrases(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_requirement import build_interface_purpose
+        from materials.shared.ledger import ApiInterface, ApiWorkOrder, ParameterGroup
+
+        interface = ApiInterface(
+            chinese_name="境外人员身份认证申请接口",
+            english_name="apply_api",
+            source_row=2,
+            input_groups=[ParameterGroup("请求体", ["参数", "参数说明"], [["custNum", "业务站点号"]])],
+            output_groups=[ParameterGroup("", ["参数", "参数说明"], [["bizSerialNum", "业务流水号"]])],
+        )
+        order = ApiWorkOrder(
+            demand_no="REQ-1",
+            work_order_no="WO-1",
+            title="出入境证件身份认证",
+            description="升级离境退税掌上办平台的出入境记录校验能力。",
+            program_count=1,
+            source_rows=(2,),
+            interfaces=[interface],
+        )
+
+        purpose = build_interface_purpose(order, interface)
+
+        self.assertIn("身份认证", purpose)
+        self.assertIn("业务流水号", purpose)
+        for banned in ("赋能", "至关重要", "确保", "重要支撑"):
+            self.assertNotIn(banned, purpose)
+
+    def test_fill_document_dispatches_registered_api_requirement_material(self):
+        module = load_fill_document_module()
+        builder = mock.Mock(return_value="out.docx")
+        spec = mock.Mock(default_filename="01-需求文档.docx")
+        with mock.patch.object(module, "get_material_spec", return_value=spec):
+            with mock.patch.object(module, "load_material_builder", return_value=builder, create=True):
+                result = module.fill_document(
+                    excel_path="ledger.xlsx",
+                    service_dir="N07-API接口开发",
+                    material_type="01-API接口开发_需求文档",
+                    template_path="template.docx",
+                    output_path="out.docx",
+                )
+
+        self.assertEqual(result, "out.docx")
+        builder.assert_called_once_with(
+            excel_path="ledger.xlsx",
+            service_dir="N07-API接口开发",
+            template_path="template.docx",
+            output_path="out.docx",
+        )
 
 
 if __name__ == "__main__":

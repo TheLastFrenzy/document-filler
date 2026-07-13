@@ -47,7 +47,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from materials.registry import get_material_spec
+from materials.registry import get_material_spec, load_material_builder
 
 HEADER_BG = "F1F1F1"
 
@@ -64,10 +64,10 @@ MATERIAL_OUTPUT_EXTENSIONS = {
 
 def resolve_output_path(output_path, material_type):
     output = Path(output_path)
+    spec = get_material_spec(material_type)
+    if spec and ((output.exists() and output.is_dir()) or not output.suffix):
+        return str(output / spec.default_filename)
     if output.exists() and output.is_dir():
-        spec = get_material_spec(material_type)
-        if spec:
-            return str(output / spec.default_filename)
         extension = MATERIAL_OUTPUT_EXTENSIONS.get(material_type, "")
         return str(output / f"{material_type}{extension}")
     return str(output)
@@ -3616,6 +3616,16 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
     print(f"筛选条件: 服务目录={service_dir}")
     print(f"材料类型: {material_type}")
 
+    spec = get_material_spec(material_type)
+    if spec:
+        builder = load_material_builder(spec)
+        return builder(
+            excel_path=excel_path,
+            service_dir=service_dir,
+            template_path=template_path,
+            output_path=output_path,
+        )
+
     if material_type == "01-数据报表_需求文档":
         data_rows = read_excel(excel_path, service_dir)
         data_rows = attach_delivery_files_for_requirement(excel_path, data_rows)
@@ -3648,7 +3658,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-API接口开发_需求文档, 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3658,7 +3668,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
 def main():
     parser = argparse.ArgumentParser(description="验收文档自动填充工具")
     parser.add_argument("--service-dir", required=True, help="服务目录筛选值，如 N08-数据报表服务")
-    parser.add_argument("--material-type", required=True, help="材料类型，如 01-数据报表_需求文档 或 02-数据报表_设计文档")
+    parser.add_argument("--material-type", required=True, help="材料类型，如 01-API接口开发_需求文档、01-数据报表_需求文档 或 02-数据报表_设计文档")
     parser.add_argument("--excel", required=True, help="台账清单Excel文件路径")
     parser.add_argument("--template", required=True, help="Word模板文件路径")
     parser.add_argument("--output", required=True, help="输出Word文档路径")
