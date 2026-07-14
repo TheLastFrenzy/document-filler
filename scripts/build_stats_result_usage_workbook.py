@@ -740,16 +740,17 @@ def wrap_by_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFon
         parts = raw_text.split("_")
         if len(parts) <= 1:
             return char_wrap(raw_text)
+        tokens = [parts[0], *[f"_{part}" for part in parts[1:]]]
         wrapped: list[str] = []
-        current = parts[0]
-        for part in parts[1:]:
-            candidate = f"{current}_{part}" if current else part
+        current = tokens[0]
+        for token in tokens[1:]:
+            candidate = f"{current}{token}"
             if text_w(candidate) <= max_width:
                 current = candidate
             else:
                 if current:
                     wrapped.extend(char_wrap(current) if text_w(current) > max_width else [current])
-                current = part
+                current = token
         if current:
             wrapped.extend(char_wrap(current) if text_w(current) > max_width else [current])
         return wrapped
@@ -769,6 +770,29 @@ def wrap_by_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFon
     return lines
 
 
+def fit_text_to_box(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+    max_height: int,
+) -> tuple[ImageFont.ImageFont, list[str], int]:
+    base_size = int(getattr(font, "size", 24) or 24)
+    sizes = range(base_size, 11, -1) if hasattr(font, "font_variant") else [base_size]
+    fitted_font = font
+    fitted_lines = wrap_by_width(draw, text, font, max_width)
+    line_height = 18
+    for size in sizes:
+        candidate = font.font_variant(size=size) if size != base_size else font
+        lines = wrap_by_width(draw, text, candidate, max_width)
+        bbox = draw.textbbox((0, 0), "Ag国", font=candidate)
+        candidate_line_height = max(14, bbox[3] - bbox[1] + 3)
+        fitted_font, fitted_lines, line_height = candidate, lines, candidate_line_height
+        if len(lines) * candidate_line_height <= max_height:
+            break
+    return fitted_font, fitted_lines, line_height
+
+
 def draw_node(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
@@ -783,12 +807,16 @@ def draw_node(
     else:
         draw.rectangle(box, fill=fill, outline=outline, width=3)
     max_width = box[2] - box[0] - 24
-    lines = wrap_by_width(draw, text, font, max_width)
-    visible_count = min(len(lines), 6)
-    line_height = min(25, max(18, (box[3] - box[1] - 12) // max(visible_count, 1)))
-    total_h = visible_count * line_height
+    font, lines, line_height = fit_text_to_box(
+        draw,
+        text,
+        font,
+        max_width,
+        box[3] - box[1] - 12,
+    )
+    total_h = len(lines) * line_height
     y = box[1] + (box[3] - box[1] - total_h) / 2
-    for line in lines[:visible_count]:
+    for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
         x = box[0] + (box[2] - box[0] - (bbox[2] - bbox[0])) / 2
         draw.text((x, y), line, font=font, fill="#333333")

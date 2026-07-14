@@ -366,6 +366,45 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertEqual(cell_widths[2], widths[2])
             self.assertEqual(cell_widths[3], widths[3])
 
+    def test_stats_design_target_entity_uses_ledger_chinese_name_when_catalog_has_no_match(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "02-数据统计分析_设计文档.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_split_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook(relation)
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "关联资源信息"
+            ws.append(["资源编码", "数据目录代码", "资源名称", "业务数据更新周期"])
+            ws.append(["SRC_ONE", "CAT-SRC-1", "源表一", "每日"])
+            wb.save(catalog)
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            doc = Document(output)
+            entity_table = next(
+                table for table in doc.tables
+                if table.rows[0].cells[2].text == "数据目录中文名称（目录名）"
+            )
+            target_row = next(row for row in entity_table.rows[1:] if row.cells[4].text == "目标表")
+
+            self.assertEqual(target_row.cells[2].text, "结果表一")
+
     def test_stats_design_result_structure_uses_nullable_and_unique_values_from_usage_workbook(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:

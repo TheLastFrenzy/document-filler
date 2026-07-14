@@ -3319,7 +3319,7 @@ def load_stats_design_catalog(catalog_path, needed_names=None):
     return rows
 
 
-def make_stats_design_entity_row(table_name, source_rd, resource_info, table_type, seq):
+def make_stats_design_entity_row(table_name, source_rd, resource_info, table_type, seq, fallback_resource_name=""):
     key = norm_table_name(table_name)
     catalog_rd = resource_info.get(key, {})
     if source_rd:
@@ -3328,7 +3328,7 @@ def make_stats_design_entity_row(table_name, source_rd, resource_info, table_typ
         source_name = source_rd.get("资源信息（表名）") or key
     else:
         directory_code = catalog_rd.get("数据目录代码", "")
-        resource_name = catalog_rd.get("资源名称", "")
+        resource_name = catalog_rd.get("资源名称", "") or fallback_resource_name
         source_name = key
     return [
         str(seq),
@@ -3496,7 +3496,16 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
             seen_sources.add(key)
             entity_rows.append(make_stats_design_entity_row(table_name, source, resource_info, "源表", seq))
             seq += 1
-        entity_rows.append(make_stats_design_entity_row(result_en, None, resource_info, "目标表", seq))
+        entity_rows.append(
+            make_stats_design_entity_row(
+                result_en,
+                None,
+                resource_info,
+                "目标表",
+                seq,
+                fallback_resource_name=result_cn,
+            )
+        )
         append_body_element(body, make_table_oxml(
             ["序号", "数据目录/编码（如有）", "数据目录中文名称（目录名）", "表名", "表类型", "数据更新周期"],
             entity_rows,

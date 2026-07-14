@@ -225,6 +225,37 @@ class StatsResultDispatchTest(unittest.TestCase):
 
             self.assertEqual(line_pixels, 0)
 
+    def test_draw_node_keeps_full_long_result_table_name_visible(self):
+        module = load_builder_module()
+        image = module.Image.new("RGBA", (1280, 1120), (255, 255, 255, 0))
+        real_draw = module.ImageDraw.Draw(image)
+
+        class RecordingDraw:
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.text_lines = []
+
+            def __getattr__(self, name):
+                return getattr(self.delegate, name)
+
+            def text(self, position, value, **kwargs):
+                self.text_lines.append(value)
+                return self.delegate.text(position, value, **kwargs)
+
+        draw = RecordingDraw(real_draw)
+        font_file = module.font_path()
+        font = module.ImageFont.truetype(font_file, 24) if font_file else module.ImageFont.load_default()
+        result_en = "FUSION_QSK_GENERAL_RELATIVE_CODE_FINAL_SHYJSCKK_GA"
+        text = (
+            "统计融合为\n"
+            "亲属关系核验（参考库）个人身后一件事_公安\n"
+            f"{result_en}"
+        )
+
+        module.draw_node(draw, (435, 510, 845, 680), text, font)
+
+        self.assertIn(result_en, "".join(draw.text_lines))
+
     def test_result_workbook_applies_songti_gray_fill_defaults_and_relation_spacing(self):
         module = load_builder_module()
         with tempfile.TemporaryDirectory() as temp_dir:
