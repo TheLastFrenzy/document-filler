@@ -168,6 +168,77 @@ class StatsResultDispatchTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["统计分析结果表清单"], "测试结果表 TEST_RESULT")
 
+    def test_embedded_text_payload_extracts_xml_program(self):
+        module = load_builder_module()
+        xml = "<mxGraphModel><root><mxCell id=\"1\" /></root></mxGraphModel>"
+        payload = (
+            "C:\\Temp\\程序附件.txt\x00".encode("gb18030")
+            + b"\x00\x00"
+            + xml.encode("gb18030")
+            + b"\x00trailing"
+        )
+
+        self.assertEqual(module.xml_text_from_attachment_payload(payload), xml)
+
+    def test_embedded_text_payload_stops_at_native_metadata_when_xml_has_no_closing_tag(self):
+        module = load_builder_module()
+        xml = '<mxGraphModel><root><mxCell id="3" modelData="{&quot;sql&quot;:&quot;select A from SRC&quot;}" />'
+        payload = xml.encode("gb18030") + b"\x00\x7f\x00\x00\x00C\x00:\x00\\\x00Temp"
+
+        self.assertEqual(module.xml_text_from_attachment_payload(payload), xml)
+
+    def test_load_ledger_rows_uses_embedded_xml_when_cell_is_blank(self):
+        module = load_builder_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["服务目录", "结果表清单", "程序XML文本"])
+            ws.append(["N08-数据统计分析", "测试结果表 TEST_RESULT", None])
+            wb.save(ledger)
+            xml = "<mxGraphModel><root><mxCell id=\"1\" /></root></mxGraphModel>"
+
+            with mock.patch.object(module, "extract_embedded_xml_text_by_cell", return_value={(2, 3): xml}):
+                rows = module.load_ledger_rows(ledger, "N08-数据统计分析")
+
+        self.assertEqual(rows[0]["程序XML文本"], xml)
+
+    def test_parse_model_data_keeps_nested_html_entities_in_sql(self):
+        module = load_builder_module()
+        raw = '{"sql":"select &quot;PERSON_NAME&quot; from SRC_PERSON"}'
+
+        self.assertEqual(module.parse_model_data(raw)["sql"], 'select &quot;PERSON_NAME&quot; from SRC_PERSON')
+
+    def test_parse_model_data_recovers_truncated_sql_fragment(self):
+        module = load_builder_module()
+        raw = "{&quot;sql&quot;:&quot;CREATE TABLE RESULT_ONE\\r\\n(ID varchar(20) COMMENT &#39;编号&#39;)"
+
+        self.assertIn("CREATE TABLE RESULT_ONE", module.parse_model_data(raw)["sql"])
+
+    def test_truncated_xml_parser_keeps_sql_comparison_operator_inside_model_data(self):
+        module = load_builder_module()
+        xml = (
+            '<mxGraphModel><root><mxCell id="3" title="sql语句" '
+            'modelData="{&quot;sql&quot;:&quot;select PERSON_ID from SRC_PERSON where AGE > 18&quot;}" />'
+        )
+
+        nodes, edges = module.parse_truncated_xml_program(xml)
+
+        self.assertEqual(edges, [])
+        self.assertEqual(nodes[0]["sql"], "select PERSON_ID from SRC_PERSON where AGE > 18")
+
+    def test_truncated_xml_parser_recovers_unclosed_model_data_sql(self):
+        module = load_builder_module()
+        xml = (
+            '<mxGraphModel><root><mxCell id="3" title="sql语句" '
+            'modelData="{&quot;sql&quot;:&quot;CREATE TABLE RESULT_ONE\\r\\n(ID varchar(20) COMMENT &#39;编号&#39;)'
+        )
+
+        nodes, _edges = module.parse_truncated_xml_program(xml)
+
+        self.assertIn("CREATE TABLE RESULT_ONE", nodes[0]["sql"])
+
     def test_draw_flowchart_png_uses_transparent_background_and_no_push_node(self):
         module = load_builder_module()
         with tempfile.TemporaryDirectory() as temp_dir:

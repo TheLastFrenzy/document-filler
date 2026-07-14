@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import html
+import io
 import json
 import math
+import posixpath
 import re
 import sys
 import textwrap
@@ -16,6 +18,7 @@ from copy import copy
 from pathlib import Path
 
 import openpyxl
+import olefile
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -41,6 +44,9 @@ SHEET_RESULT_DETAIL = "4、数据统计分析结果表详情"
 
 NS_MAIN = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 NS_REL = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
+OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+OLE_NS = "urn:schemas-microsoft-com:office:office"
+OLE_CFB_SIGNATURE = bytes.fromhex("d0cf11e0a1b11ae1")
 
 DEFAULT_FONT_NAME = "宋体"
 DEFAULT_HIGHLIGHT_FILL = "F2F2F2"
@@ -115,20 +121,188 @@ def merged_value_getter(ws):
     return get
 
 
+def _local_name(element):
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def _sheet_rel_target(sheet_path: str, target: str) -> str:
+    if target.startswith("/"):
+        return target.lstrip("/")
+    base = posixpath.dirname(sheet_path)
+    return posixpath.normpath(posixpath.join(base, target))
+
+
+def _relationship_targets(archive: zipfile.ZipFile, sheet_path: str) -> dict[str, str]:
+    rels_path = posixpath.join(
+        posixpath.dirname(sheet_path),
+        "_rels",
+        f"{posixpath.basename(sheet_path)}.rels",
+    )
+    if rels_path not in archive.namelist():
+        return {}
+    root = ET.fromstring(archive.read(rels_path))
+    return {
+        element.attrib["Id"]: _sheet_rel_target(sheet_path, element.attrib["Target"])
+        for element in root
+        if "Id" in element.attrib and "Target" in element.attrib
+    }
+
+
+def _trim_xml_text(text: str) -> str:
+    start = -1
+    for marker in ("<mxGraphModel", "<?xml"):
+        start = text.find(marker)
+        if start >= 0:
+            break
+    if start < 0:
+        return ""
+    text = text[start:].strip("\x00 \r\n\t")
+    end = text.rfind("</mxGraphModel>")
+    if end >= 0:
+        text = text[: end + len("</mxGraphModel>")]
+    return text.strip("\x00 \r\n\t")
+
+
+def _decode_xml_bytes(payload: bytes, encodings: tuple[str, ...]) -> str:
+    for encoding in encodings:
+        try:
+            text = payload.decode(encoding, errors="strict")
+        except UnicodeError:
+            continue
+        trimmed = _trim_xml_text(text)
+        if trimmed:
+            return trimmed
+    for encoding in encodings:
+        try:
+            text = payload.decode(encoding, errors="replace")
+        except Exception:
+            continue
+        trimmed = _trim_xml_text(text)
+        if trimmed:
+            return trimmed
+    return ""
+
+
+def xml_text_from_attachment_payload(payload: bytes) -> str:
+    for marker in (b"<mxGraphModel", b"<?xml"):
+        index = payload.find(marker)
+        if index >= 0:
+            segment = payload[index:]
+            close = segment.find(b"</mxGraphModel>")
+            if close >= 0:
+                segment = segment[: close + len(b"</mxGraphModel>")]
+            else:
+                nul = segment.find(b"\x00")
+                if nul >= 0:
+                    segment = segment[:nul]
+            return _decode_xml_bytes(segment, ("utf-8-sig", "gb18030", "latin1"))
+    for marker in ("<mxGraphModel", "<?xml"):
+        marker_bytes = marker.encode("utf-16le")
+        index = payload.find(marker_bytes)
+        if index >= 0:
+            return _decode_xml_bytes(payload[index:], ("utf-16le",))
+    return ""
+
+
+def embedded_xml_text_from_payload(payload: bytes) -> str:
+    text = xml_text_from_attachment_payload(payload)
+    if text:
+        return text
+    if not payload.startswith(OLE_CFB_SIGNATURE):
+        return ""
+    ole = None
+    try:
+        ole = olefile.OleFileIO(io.BytesIO(payload))
+        for stream in ole.listdir(streams=True, storages=False):
+            try:
+                text = xml_text_from_attachment_payload(ole.openstream(stream).read())
+            except Exception:
+                continue
+            if text:
+                return text
+    except Exception:
+        return ""
+    finally:
+        if ole is not None:
+            ole.close()
+    return ""
+
+
+def extract_embedded_xml_text_by_cell(excel_path: Path, column_numbers: set[int]) -> dict[tuple[int, int], str]:
+    result: dict[tuple[int, int], str] = {}
+    with zipfile.ZipFile(excel_path, "r") as archive:
+        names = set(archive.namelist())
+        sheet_paths = sorted(
+            name for name in names if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        )
+        for sheet_path in sheet_paths:
+            root = ET.fromstring(archive.read(sheet_path))
+            targets = _relationship_targets(archive, sheet_path)
+            shape_targets: dict[str, str] = {}
+            legacy_rids: list[str] = []
+            for element in root.iter():
+                if _local_name(element) == "oleObject":
+                    shape_id = element.attrib.get("shapeId", "")
+                    rel_id = element.attrib.get(f"{{{OFFICE_REL_NS}}}id", "")
+                    if shape_id and rel_id:
+                        shape_targets[shape_id] = targets.get(rel_id, "")
+                elif _local_name(element) == "legacyDrawing":
+                    rel_id = element.attrib.get(f"{{{OFFICE_REL_NS}}}id", "")
+                    if rel_id:
+                        legacy_rids.append(rel_id)
+
+            for legacy_rid in legacy_rids:
+                vml_path = targets.get(legacy_rid, "")
+                if not vml_path or vml_path not in names:
+                    continue
+                vml_root = ET.fromstring(archive.read(vml_path))
+                for shape in vml_root.iter():
+                    if _local_name(shape) != "shape" or shape.attrib.get(f"{{{OLE_NS}}}ole") != "t":
+                        continue
+                    shape_id = shape.attrib.get("id", "").rsplit("_s", 1)[-1]
+                    target = shape_targets.get(shape_id, "")
+                    if not target or target not in names:
+                        continue
+                    anchor_text = ""
+                    for child in shape.iter():
+                        if _local_name(child) == "Anchor":
+                            anchor_text = child.text or ""
+                            break
+                    try:
+                        parts = [int(value.strip()) for value in anchor_text.split(",") if value.strip()]
+                    except ValueError:
+                        continue
+                    if len(parts) < 3:
+                        continue
+                    row = parts[2] + 1
+                    column = parts[0] + 1
+                    if column not in column_numbers:
+                        continue
+                    text = embedded_xml_text_from_payload(archive.read(target))
+                    if text:
+                        result[(row, column)] = text
+    return result
+
+
 def load_ledger_rows(ledger_path: Path, service_dir: str) -> list[dict[str, str]]:
     wb = load_workbook(ledger_path, data_only=False)
     ws = wb.active
     headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
     get = merged_value_getter(ws)
     service_col = headers.index("服务目录") + 1
+    xml_col = headers.index(LEDGER_XML_COL) + 1 if LEDGER_XML_COL in headers else 0
+    embedded_xml_by_cell = extract_embedded_xml_text_by_cell(ledger_path, {xml_col}) if xml_col else {}
     rows: list[dict[str, str]] = []
     for row in range(2, ws.max_row + 1):
         if get(row, service_col) != service_dir:
             continue
         record = {header: get(row, idx + 1) for idx, header in enumerate(headers) if header}
         record = normalize_ledger_record(record)
+        if xml_col and not record.get(LEDGER_XML_COL):
+            record[LEDGER_XML_COL] = embedded_xml_by_cell.get((row, xml_col), "")
         record["_row"] = str(row)
         rows.append(record)
+    wb.close()
     return rows
 
 
@@ -142,11 +316,53 @@ def parse_result_name(text: str) -> tuple[str, str]:
 def parse_model_data(raw: str | None) -> dict:
     if not raw:
         return {}
+    candidates = [raw]
+    unescaped = html.unescape(raw)
+    if unescaped != raw:
+        candidates.append(unescaped)
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except Exception:
+            continue
+        return value if isinstance(value, dict) else {}
+    sql = extract_json_string_fragment(raw, "sql")
+    expression = extract_json_string_fragment(raw, "expression")
+    if sql or expression:
+        return {"sql": sql, "expression": expression}
+    return {}
+
+
+def extract_json_string_fragment(raw: str, field: str) -> str:
+    text = html.unescape(raw or "")
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*"', text)
+    if not match:
+        return ""
+    start = match.end()
+    index = start
+    escaped = False
+    while index < len(text):
+        ch = text[index]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            break
+        index += 1
+    fragment = text[start:index]
+    while fragment.endswith("\\"):
+        fragment = fragment[:-1]
     try:
-        value = json.loads(html.unescape(raw))
+        return json.loads(f'"{fragment}"')
     except Exception:
-        return {}
-    return value if isinstance(value, dict) else {}
+        return (
+            fragment.replace(r"\r", "\n")
+            .replace(r"\n", "\n")
+            .replace(r"\t", "\t")
+            .replace(r"\"", '"')
+            .replace(r"\\", "\\")
+        )
 
 
 def parse_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
@@ -185,11 +401,55 @@ def parse_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
     return nodes, edges
 
 
+def iter_mxcell_start_tags(xml_text: str):
+    position = 0
+    while True:
+        start = xml_text.find("<mxCell", position)
+        if start < 0:
+            return
+        quote: str | None = None
+        index = start
+        while index < len(xml_text):
+            ch = xml_text[index]
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == ">":
+                yield xml_text[start : index + 1]
+                position = index + 1
+                break
+            index += 1
+        else:
+            yield xml_text[start:]
+            return
+
+
+def extract_tag_attribute(tag: str, name: str) -> str:
+    match = re.search(rf'\b{re.escape(name)}="', tag)
+    if not match:
+        return ""
+    start = match.end()
+    index = start
+    while index < len(tag):
+        if tag[index] == '"':
+            rest = tag[index + 1 :]
+            if re.match(r"\s*(?:[A-Za-z_:][\w:.-]*=|/?>)", rest):
+                return tag[start:index]
+        index += 1
+    return tag[start:].rstrip(" />")
+
+
 def parse_truncated_xml_program(xml_text: str) -> tuple[list[dict], list[dict]]:
     nodes: list[dict] = []
     edges: list[dict] = []
-    for match in re.finditer(r"<mxCell\b[^>]*(?:>|$)", xml_text or "", flags=re.S):
-        attrs = dict(re.findall(r"([A-Za-z_:][\w:.-]*)=\"([^\"]*)\"", match.group(0)))
+    for tag in iter_mxcell_start_tags(xml_text or ""):
+        attrs = dict(re.findall(r"([A-Za-z_:][\w:.-]*)=\"([^\"]*)\"", tag))
+        if "modelData" not in attrs:
+            model_data = extract_tag_attribute(tag, "modelData")
+            if model_data:
+                attrs["modelData"] = model_data
         if attrs.get("edge") == "1":
             edges.append(
                 {
