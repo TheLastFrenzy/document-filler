@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import openpyxl
@@ -320,6 +321,46 @@ def make_api_code_template(path: Path):
     return path
 
 
+def make_api_test_report_template(path: Path):
+    document = Document()
+    document.add_paragraph("API接口测试报告")
+    document.add_paragraph("测试报告")
+    document.add_heading("API测试清单", level=1)
+    list_table = document.add_table(rows=2, cols=4)
+    for index, value in enumerate(["序号", "接口代码", "接口名称", "责任委办"]):
+        list_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "old_api", "旧接口", "应用开发部"]):
+        list_table.rows[1].cells[index].text = value
+    set_table_format(list_table, "D9EAF7")
+    document.add_heading("API测试内容", level=1)
+    interface_heading = document.add_heading("旧接口 old_api", level=2)
+    set_paragraph_format(interface_heading, font="微软雅黑 Light", size=14)
+    input_heading = document.add_heading("输入参数", level=3)
+    set_paragraph_format(input_heading, font="微软雅黑", size=11)
+    input_table = add_parameter_table(
+        document,
+        ["序号", "参数项", "名称", "测试数据1"],
+        [["1", "old", "旧参数", "旧测试数据"]],
+    )
+    set_table_format(input_table, "D9D9D9")
+    output_heading = document.add_heading("输出参数", level=3)
+    set_paragraph_format(output_heading, font="微软雅黑", size=11)
+    output_table = add_parameter_table(
+        document,
+        ["序号", "参数项", "名称", "结果数据"],
+        [["1", "oldResult", "旧结果", "旧结果数据"]],
+    )
+    set_table_format(output_table, "E7E6E6")
+    result_heading = document.add_heading("测试结果", level=3)
+    set_paragraph_format(result_heading, font="微软雅黑", size=11)
+    result_body = document.add_paragraph("测试结果与预期结果一致，测试通过。")
+    set_paragraph_format(result_body, first_line=480)
+    document.add_heading("测试结论", level=1)
+    document.add_paragraph("STATIC_TEST_CONCLUSION_MARKER")
+    document.save(path)
+    return path
+
+
 def make_api_data_model_template(path: Path):
     document = Document()
     document.add_paragraph("API数据模型设计")
@@ -424,6 +465,13 @@ class ApiRequirementTest(unittest.TestCase):
             output = module.resolve_output_path(temp_dir, "03-API接口开发_接口开发代码")
 
         self.assertEqual(Path(output).name, "03-接口开发代码.docx")
+
+    def test_api_test_report_registration_uses_public_output_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "04-API接口开发_接口测试报告")
+
+        self.assertEqual(Path(output).name, "04-接口测试报告（含《API接口列表》）.docx")
 
     def test_read_api_work_orders_groups_merged_rows_and_counts_programs_once(self):
         if str(SCRIPTS) not in sys.path:
@@ -628,6 +676,74 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertEqual(document.tables[0].rows[1].cells[1].text, "token_api")
         self.assertEqual(document.tables[0].rows[1].cells[3].text, "上海市大数据中心")
         self.assertEqual(len(document.inline_shapes), 6)
+
+    def test_build_api_test_report_document_replaces_list_params_and_result_images(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_test_report
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report_with_code_images(temp / "self-test.docx")
+            template = make_api_test_report_template(temp / "template.docx")
+            output = temp / "04-接口测试报告（含《API接口列表》）.docx"
+            with mock.patch.object(
+                api_test_report,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+                create=True,
+            ), mock.patch.object(api_test_report, "update_toc_via_com", create=True):
+                api_test_report.build_api_test_report_document(
+                    excel_path=ledger,
+                    service_dir="N07-API接口开发",
+                    template_path=template,
+                    output_path=output,
+                )
+
+            document = Document(output)
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+        self.assertIn("境外人员获取令牌接口 token_api", text)
+        self.assertIn("境外人员身份认证申请接口 apply_api", text)
+        self.assertIn("境外人员身份认证请求接口 auth_api", text)
+        self.assertIn("STATIC_TEST_CONCLUSION_MARKER", text)
+        self.assertNotIn("旧接口 old_api", text)
+        self.assertEqual(len(document.tables), 7)
+        self.assertEqual(len(document.tables[0].rows), 4)
+        self.assertEqual(document.tables[0].rows[1].cells[1].text, "token_api")
+        self.assertEqual(document.tables[0].rows[1].cells[3].text, "上海市大数据中心")
+        self.assertEqual(
+            [cell.text for cell in document.tables[1].rows[0].cells],
+            ["序号", "参数项", "名称", "测试数据1"],
+        )
+        self.assertEqual(
+            [cell.text for cell in document.tables[2].rows[0].cells],
+            ["序号", "参数项", "名称", "结果数据"],
+        )
+        self.assertEqual(len(document.inline_shapes), 3)
+
+    def test_api_test_report_doc_conversion_creates_missing_work_directory(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_test_report
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template = temp / "template.doc"
+            template.write_bytes(b"legacy-doc-placeholder")
+            work_dir = temp / "missing" / "template"
+
+            def fake_run(*args, **kwargs):
+                converted = work_dir / "template.docx"
+                self.assertTrue(converted.parent.exists())
+                converted.write_bytes(b"converted-docx-placeholder")
+                return SimpleNamespace(stdout="CONVERTED", stderr="", returncode=0)
+
+            with mock.patch.object(api_test_report.subprocess, "run", side_effect=fake_run):
+                converted = api_test_report._convert_legacy_doc_template(template, work_dir)
+
+        self.assertEqual(converted, work_dir / "template.docx")
 
     def test_generated_dynamic_blocks_reuse_template_direct_formatting(self):
         if str(SCRIPTS) not in sys.path:
@@ -886,6 +1002,28 @@ class ApiRequirementTest(unittest.TestCase):
             service_dir="N07-API接口开发",
             template_path="template.docx",
             output_path="out.docx",
+        )
+
+    def test_fill_document_dispatches_registered_api_test_report_material(self):
+        module = load_fill_document_module()
+        builder = mock.Mock(return_value="out.docx")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "结果"
+            with mock.patch.object(module, "load_material_builder", return_value=builder, create=True):
+                result = module.fill_document(
+                    excel_path="ledger.xlsx",
+                    service_dir="N07-API接口开发",
+                    material_type="04-API接口开发_接口测试报告",
+                    template_path="template.docx",
+                    output_path=output_dir,
+                )
+
+        self.assertEqual(result, "out.docx")
+        builder.assert_called_once_with(
+            excel_path="ledger.xlsx",
+            service_dir="N07-API接口开发",
+            template_path="template.docx",
+            output_path=str(output_dir / "04-接口测试报告（含《API接口列表》）.docx"),
         )
 
 
