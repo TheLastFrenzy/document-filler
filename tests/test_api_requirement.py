@@ -256,6 +256,45 @@ def make_api_template(path: Path):
     return path
 
 
+def make_api_data_model_template(path: Path):
+    document = Document()
+    document.add_paragraph("API数据模型设计")
+    document.add_heading("目的", level=1)
+    body = document.add_paragraph("通过对API数据模型进行设计。")
+    set_paragraph_format(body, first_line=480, line_spacing=360)
+    document.add_heading("接口配置表设计", level=1)
+    document.add_heading("接口定义表", level=2)
+    definition = document.add_table(rows=2, cols=6)
+    for index, value in enumerate(["字段名称", "字段类型", "默认", "不可为空", "唯一", "字段注释"]):
+        definition.rows[0].cells[index].text = value
+    for index, value in enumerate(["api_code", "varchar(32)", "NULL", "NO", "YES", "接口编码"]):
+        definition.rows[1].cells[index].text = value
+    set_table_format(definition, "D9EAF7")
+    document.add_heading("接口出入参配置表", level=2)
+    work_order_heading = document.add_heading("旧工单标题", level=3)
+    set_paragraph_format(work_order_heading, font="微软雅黑 Light", size=14)
+    interface_heading = document.add_heading("旧接口", level=4)
+    set_paragraph_format(interface_heading, font="微软雅黑 Light", size=12)
+    input_heading = document.add_heading("接口入参配置表", level=5)
+    set_paragraph_format(input_heading, font="微软雅黑", size=11)
+    input_table = add_parameter_table(document, ["序号", "参数名", "名称"], [["1", "old", "旧参数"]])
+    set_table_format(input_table, "D9D9D9")
+    output_heading = document.add_heading("接口出参配置表", level=5)
+    set_paragraph_format(output_heading, font="微软雅黑", size=11)
+    output_table = add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "oldResult", "旧结果"]])
+    set_table_format(output_table, "E7E6E6")
+    document.add_heading("接口组件配置表", level=2)
+    document.add_paragraph("STATIC_COMPONENT_MARKER")
+    component = document.add_table(rows=2, cols=6)
+    for index, value in enumerate(["字段名称", "字段类型", "默认", "不可为空", "唯一", "字段注释"]):
+        component.rows[0].cells[index].text = value
+    for index, value in enumerate(["api_id", "varchar(32)", "NULL", "NO", "YES", "接口id"]):
+        component.rows[1].cells[index].text = value
+    set_table_format(component, "D9EAF7")
+    document.save(path)
+    return path
+
+
 def paragraph_with_text(document, text):
     return next(paragraph for paragraph in document.paragraphs if paragraph.text.strip() == text)
 
@@ -307,6 +346,13 @@ class ApiRequirementTest(unittest.TestCase):
             output = module.resolve_output_path(result_dir, "01-API接口开发_需求文档")
 
         self.assertEqual(Path(output), result_dir / "01-需求文档.docx")
+
+    def test_api_data_model_registration_uses_public_output_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "02-API接口开发_数据模型设计")
+
+        self.assertEqual(Path(output).name, "02- 数据模型设计（API）.docx")
 
     def test_read_api_work_orders_groups_merged_rows_and_counts_programs_once(self):
         if str(SCRIPTS) not in sys.path:
@@ -413,6 +459,52 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertIn("计划供数方式：API接口对外服务", text)
         self.assertNotIn("企业电子票据证件号码校验接口", text)
         self.assertNotIn("旧接口说明", text)
+
+    def test_build_api_data_model_document_replaces_42_section_and_preserves_static_content(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_data_model
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report(temp / "self-test.docx")
+            template = make_api_data_model_template(temp / "template.docx")
+            output = temp / "02- 数据模型设计（API）.docx"
+            with mock.patch.object(
+                api_data_model,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+                create=True,
+            ), mock.patch.object(api_data_model, "update_toc_via_com", create=True):
+                api_data_model.build_api_data_model_document(
+                    excel_path=ledger,
+                    service_dir="N07-API接口开发",
+                    template_path=template,
+                    output_path=output,
+                )
+
+            document = Document(output)
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+        self.assertIn("市公安局-出入境证件身份认证-共享接口", text)
+        self.assertIn("境外人员获取令牌接口", text)
+        self.assertIn("境外人员身份认证申请接口", text)
+        self.assertIn("境外人员身份认证请求接口", text)
+        self.assertIn("请求头：", text)
+        self.assertIn("请求体：", text)
+        self.assertIn("STATIC_COMPONENT_MARKER", text)
+        self.assertNotIn("旧工单标题", text)
+        self.assertNotIn("旧接口", text)
+
+        self.assertTrue(
+            any(
+                len(table.columns) == 4
+                and [cell.text for cell in table.rows[0].cells]
+                == ["参数", "参数说明", "是否必选", "类型"]
+                for table in document.tables
+            )
+        )
 
     def test_generated_dynamic_blocks_reuse_template_direct_formatting(self):
         if str(SCRIPTS) not in sys.path:
@@ -617,6 +709,28 @@ class ApiRequirementTest(unittest.TestCase):
                     excel_path="ledger.xlsx",
                     service_dir="N07-API接口开发",
                     material_type="01-API接口开发_需求文档",
+                    template_path="template.docx",
+                    output_path="out.docx",
+                )
+
+        self.assertEqual(result, "out.docx")
+        builder.assert_called_once_with(
+            excel_path="ledger.xlsx",
+            service_dir="N07-API接口开发",
+            template_path="template.docx",
+            output_path="out.docx",
+        )
+
+    def test_fill_document_dispatches_registered_api_data_model_material(self):
+        module = load_fill_document_module()
+        builder = mock.Mock(return_value="out.docx")
+        spec = mock.Mock(default_filename="02- 数据模型设计（API）.docx")
+        with mock.patch.object(module, "get_material_spec", return_value=spec):
+            with mock.patch.object(module, "load_material_builder", return_value=builder, create=True):
+                result = module.fill_document(
+                    excel_path="ledger.xlsx",
+                    service_dir="N07-API接口开发",
+                    material_type="02-API接口开发_数据模型设计",
                     template_path="template.docx",
                     output_path="out.docx",
                 )

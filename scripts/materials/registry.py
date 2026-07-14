@@ -15,6 +15,21 @@ SPECS = {
         module="materials.n07.api_requirement",
         function="build_api_requirement_document",
     ),
+    "02-API接口开发_数据模型设计": MaterialSpec(
+        default_filename="02- 数据模型设计（API）.docx",
+        module="materials.n07.api_data_model",
+        function="build_api_data_model_document",
+    ),
+    "02-数据模型设计（API）": MaterialSpec(
+        default_filename="02- 数据模型设计（API）.docx",
+        module="materials.n07.api_data_model",
+        function="build_api_data_model_document",
+    ),
+    "02- 数据模型设计（API）": MaterialSpec(
+        default_filename="02- 数据模型设计（API）.docx",
+        module="materials.n07.api_data_model",
+        function="build_api_data_model_document",
+    ),
 }
 
 
