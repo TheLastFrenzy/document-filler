@@ -73,6 +73,28 @@ def paragraph_element(text, style_id, first_line_indent=None):
     return paragraph
 
 
+def clone_paragraph_with_text(prototype, text):
+    paragraph = OxmlElement("w:p")
+    properties = prototype.find(qn("w:pPr"))
+    if properties is not None:
+        paragraph.append(deepcopy(properties))
+
+    prototype_run = prototype.find(qn("w:r"))
+    if prototype_run is None:
+        prototype_run = prototype.find(".//" + qn("w:r"))
+    run = OxmlElement("w:r")
+    if prototype_run is not None:
+        run_properties = prototype_run.find(qn("w:rPr"))
+        if run_properties is not None:
+            run.append(deepcopy(run_properties))
+    text_node = OxmlElement("w:t")
+    text_node.set(qn("xml:space"), "preserve")
+    text_node.text = str(text or "")
+    run.append(text_node)
+    paragraph.append(run)
+    return paragraph
+
+
 def _table_borders(properties):
     existing = properties.find(qn("w:tblBorders"))
     if existing is not None:
@@ -194,6 +216,141 @@ def table_element(headers, rows, column_widths=None):
         for index, value in enumerate(values):
             row.append(_cell_element(value, column_widths[index]))
         table.append(row)
+    return table
+
+
+def _cell_grid_span(cell):
+    properties = cell.find(qn("w:tcPr"))
+    span = properties.find(qn("w:gridSpan")) if properties is not None else None
+    return int(span.get(qn("w:val"))) if span is not None else 1
+
+
+def _resize_unmerged_row(row, column_count):
+    cells = list(row.findall(qn("w:tc")))
+    if any(_cell_grid_span(cell) != 1 for cell in cells):
+        return
+    while len(cells) > column_count:
+        row.remove(cells.pop())
+    prototype = cells[-1] if cells else None
+    while len(cells) < column_count:
+        cell = deepcopy(prototype) if prototype is not None else OxmlElement("w:tc")
+        row.append(cell)
+        cells.append(cell)
+
+
+def _replace_cell_text(cell, text):
+    prototype_paragraph = cell.find(qn("w:p"))
+    for child in list(cell):
+        if child.tag != qn("w:tcPr"):
+            cell.remove(child)
+    if prototype_paragraph is None:
+        prototype_paragraph = OxmlElement("w:p")
+    cell.append(clone_paragraph_with_text(prototype_paragraph, text))
+
+
+def _set_cell_width(cell, width, total_width):
+    properties = cell.find(qn("w:tcPr"))
+    if properties is None:
+        properties = OxmlElement("w:tcPr")
+        cell.insert(0, properties)
+    cell_width = properties.find(qn("w:tcW"))
+    if cell_width is None:
+        cell_width = OxmlElement("w:tcW")
+        properties.insert(0, cell_width)
+    width_type = cell_width.get(qn("w:type"), "pct")
+    if width_type == "pct":
+        cell_width.set(qn("w:w"), str(round(width * 5000 / total_width)))
+    else:
+        cell_width.set(qn("w:w"), str(width))
+
+
+def _clone_table_row(prototype, values, widths, adjust_widths):
+    row = deepcopy(prototype)
+    logical_columns = len(values)
+    _resize_unmerged_row(row, logical_columns)
+    logical_index = 0
+    for cell in row.findall(qn("w:tc")):
+        span = _cell_grid_span(cell)
+        value = values[logical_index] if logical_index < logical_columns else ""
+        _replace_cell_text(cell, value)
+        if adjust_widths and logical_index < len(widths):
+            cell_width = sum(widths[logical_index : logical_index + span])
+            _set_cell_width(cell, cell_width, sum(widths))
+        logical_index += span
+    return row
+
+
+def _set_repeat_table_header(row):
+    properties = row.find(qn("w:trPr"))
+    if properties is None:
+        properties = OxmlElement("w:trPr")
+        row.insert(0, properties)
+    if properties.find(qn("w:tblHeader")) is None:
+        properties.append(OxmlElement("w:tblHeader"))
+
+
+def clone_table_with_data(prototype, headers, rows, column_widths=None, footer=None):
+    headers = [str(value or "") for value in headers]
+    if not headers:
+        raise ValueError("参数表缺少表头")
+    column_count = len(headers)
+    if column_widths is not None and len(column_widths) != column_count:
+        raise ValueError("参数表列宽与表头不匹配")
+
+    table = deepcopy(prototype)
+    prototype_rows = list(table.findall(qn("w:tr")))
+    if not prototype_rows:
+        raise ValueError("模板表格缺少原型行")
+    header_prototype = prototype_rows[0]
+    data_prototype = prototype_rows[1] if len(prototype_rows) > 1 else prototype_rows[0]
+    footer_prototype = prototype_rows[-1] if len(prototype_rows) > 2 else data_prototype
+    prototype_column_count = sum(
+        _cell_grid_span(cell) for cell in header_prototype.findall(qn("w:tc"))
+    )
+
+    grid = table.find(qn("w:tblGrid"))
+    source_grid = [] if grid is None else [
+        int(column.get(qn("w:w"), "0")) for column in grid.findall(qn("w:gridCol"))
+    ]
+    total_width = sum(source_grid) or 9000
+    if column_widths is None:
+        if len(source_grid) == column_count and all(source_grid):
+            widths = source_grid
+        else:
+            widths = [total_width // column_count] * column_count
+            widths[-1] += total_width - sum(widths)
+    else:
+        source_total = sum(int(value) for value in column_widths)
+        if source_total <= 0:
+            raise ValueError("参数表列宽必须为正数")
+        widths = [round(int(value) * total_width / source_total) for value in column_widths]
+        widths[-1] += total_width - sum(widths)
+    adjust_widths = column_widths is not None or prototype_column_count != column_count
+
+    if grid is None:
+        grid = OxmlElement("w:tblGrid")
+        properties = table.find(qn("w:tblPr"))
+        table.insert(table.index(properties) + 1 if properties is not None else 0, grid)
+    for column in list(grid):
+        grid.remove(column)
+    for width in widths:
+        column = OxmlElement("w:gridCol")
+        column.set(qn("w:w"), str(width))
+        grid.append(column)
+
+    for row in prototype_rows:
+        table.remove(row)
+    header_row = _clone_table_row(header_prototype, headers, widths, adjust_widths)
+    _set_repeat_table_header(header_row)
+    table.append(header_row)
+    for source_row in rows:
+        values = [str(value or "") for value in source_row[:column_count]]
+        values.extend([""] * (column_count - len(values)))
+        table.append(_clone_table_row(data_prototype, values, widths, adjust_widths))
+    if footer is not None:
+        values = [str(value or "") for value in footer[:column_count]]
+        values.extend([""] * (column_count - len(values)))
+        table.append(_clone_table_row(footer_prototype, values, widths, adjust_widths))
     return table
 
 

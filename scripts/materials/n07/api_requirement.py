@@ -1,8 +1,10 @@
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
@@ -10,13 +12,13 @@ from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import ApiInterface, ParameterGroup, read_api_work_orders
 from materials.shared.word_sections import (
     clone_element,
+    clone_paragraph_with_text,
+    clone_table_with_data,
     element_text,
     elements_between,
     find_heading,
-    paragraph_element,
     replace_after,
     replace_between,
-    table_element,
     update_toc_via_com,
 )
 
@@ -27,6 +29,25 @@ STOP_LABELS = {
     "测试结果",
     "测试结论",
 }
+
+
+@dataclass(frozen=True)
+class ApiRequirementPrototypes:
+    business_before: tuple
+    business_scene: object
+    business_after: tuple
+    demand_summary: object
+    demand_table: object
+    work_order_heading: object
+    work_order_body: object
+    interface_heading: object
+    interface_purpose: object
+    supply_method: object
+    update_frequency: object
+    input_label: object
+    output_label: object
+    input_parameter_table: object
+    output_parameter_table: object
 
 
 def _normalize_heading(value):
@@ -157,30 +178,155 @@ def build_interface_purpose(order, interface):
     return re.sub(r"\s+", "", text)
 
 
-def _style_ids(document):
-    return {
-        name: document.styles[name].style_id
-        for name in ("Heading 2", "Heading 3", "Normal", "Body Text")
-    }
+def _paragraph_style_id(element):
+    properties = element.find(qn("w:pPr"))
+    style = properties.find(qn("w:pStyle")) if properties is not None else None
+    return style.get(qn("w:val")) if style is not None else None
 
 
-def _build_business_scene(document, orders, styles, business_heading, demand_heading):
-    existing = elements_between(business_heading._p, demand_heading._p)
-    first_paragraph = next(
-        (element for element in existing if element.tag.endswith("}p") and element_text(element)),
+def _nonempty_paragraphs(elements):
+    return [
+        element
+        for element in elements
+        if element.tag == qn("w:p") and element_text(element)
+    ]
+
+
+def _require_prototype(value, name):
+    if value is None:
+        raise ValueError(f"模板中未找到{name}格式原型")
+    return value
+
+
+def _capture_template_prototypes(
+    document,
+    business_heading,
+    demand_intro_heading,
+    demand_heading,
+    shared_heading,
+    api_heading,
+):
+    heading_3_style = document.styles["Heading 3"].style_id
+
+    business_elements = elements_between(business_heading._p, demand_intro_heading._p)
+    business_paragraphs = _nonempty_paragraphs(business_elements)
+    if not business_paragraphs:
+        raise ValueError("模板业务场景章节缺少动态段落格式原型")
+    dynamic_scene = business_paragraphs[1] if len(business_paragraphs) > 1 else business_paragraphs[0]
+    dynamic_scene_index = business_elements.index(dynamic_scene)
+    business_before = tuple(business_elements[:dynamic_scene_index])
+    business_after = tuple(business_elements[dynamic_scene_index + 1 :])
+
+    demand_elements = elements_between(demand_heading._p, shared_heading._p)
+    demand_paragraphs = _nonempty_paragraphs(demand_elements)
+    demand_summary = demand_paragraphs[0] if demand_paragraphs else None
+    demand_table = next((item for item in demand_elements if item.tag == qn("w:tbl")), None)
+    work_order_heading = next(
+        (
+            item
+            for item in demand_elements
+            if item.tag == qn("w:p") and _paragraph_style_id(item) == heading_3_style
+        ),
         None,
     )
+    work_order_body = None
+    if work_order_heading is not None:
+        start = demand_elements.index(work_order_heading) + 1
+        work_order_body = next(
+            (
+                item
+                for item in demand_elements[start:]
+                if item.tag == qn("w:p") and element_text(item)
+            ),
+            None,
+        )
+
+    api_elements = []
+    current = api_heading._p.getnext()
+    while current is not None and current.tag != qn("w:sectPr"):
+        api_elements.append(current)
+        current = current.getnext()
+    interface_heading = next(
+        (
+            item
+            for item in api_elements
+            if item.tag == qn("w:p") and _paragraph_style_id(item) == heading_3_style
+        ),
+        None,
+    )
+    interface_purpose = None
+    if interface_heading is not None:
+        start = api_elements.index(interface_heading) + 1
+        interface_purpose = next(
+            (
+                item
+                for item in api_elements[start:]
+                if item.tag == qn("w:p") and element_text(item)
+            ),
+            None,
+        )
+
+    def paragraph_named(text):
+        return next(
+            (
+                item
+                for item in api_elements
+                if item.tag == qn("w:p") and element_text(item) == text
+            ),
+            None,
+        )
+
+    input_label = paragraph_named("接口输入参数：")
+    output_label = paragraph_named("接口输出参数：")
+
+    def first_table_after(paragraph):
+        if paragraph is None:
+            return None
+        start = api_elements.index(paragraph) + 1
+        return next(
+            (item for item in api_elements[start:] if item.tag == qn("w:tbl")),
+            None,
+        )
+
+    return ApiRequirementPrototypes(
+        business_before=business_before,
+        business_scene=dynamic_scene,
+        business_after=business_after,
+        demand_summary=_require_prototype(demand_summary, "需求清单说明段落"),
+        demand_table=_require_prototype(demand_table, "需求清单表格"),
+        work_order_heading=_require_prototype(work_order_heading, "工单标题"),
+        work_order_body=_require_prototype(work_order_body, "工单需求口径"),
+        interface_heading=_require_prototype(interface_heading, "API接口标题"),
+        interface_purpose=_require_prototype(interface_purpose, "API接口说明"),
+        supply_method=_require_prototype(
+            paragraph_named("计划供数方式：API接口对外服务"), "计划供数方式"
+        ),
+        update_frequency=_require_prototype(
+            paragraph_named("计划更新频率：无"), "计划更新频率"
+        ),
+        input_label=_require_prototype(input_label, "接口输入参数标签"),
+        output_label=_require_prototype(output_label, "接口输出参数标签"),
+        input_parameter_table=_require_prototype(
+            first_table_after(input_label), "API输入参数表格"
+        ),
+        output_parameter_table=_require_prototype(
+            first_table_after(output_label), "API输出参数表格"
+        ),
+    )
+
+
+def _build_business_scene(orders, prototypes):
     titles = "、".join(order.title for order in orders)
     total = sum(order.program_count for order in orders)
     scene = f"在本服务周期内，围绕{titles}开展API接口开发，共提供{total}个API接口服务。"
-    elements = []
-    if first_paragraph is not None:
-        elements.append(clone_element(first_paragraph))
-    elements.append(paragraph_element(scene, styles["Normal"], 480))
-    replace_between(business_heading._p, demand_heading._p, elements)
+    return [
+        *(clone_element(element) for element in prototypes.business_before),
+        clone_paragraph_with_text(prototypes.business_scene, scene),
+        *(clone_element(element) for element in prototypes.business_after),
+    ]
 
 
-def _build_demand_section(orders, styles):
+def _build_demand_section(orders, prototypes):
     request_count = len({order.demand_no for order in orders if order.demand_no})
     total = sum(order.program_count for order in orders)
     summary = (
@@ -192,40 +338,78 @@ def _build_demand_section(orders, styles):
         [str(index), order.demand_no, order.work_order_no, order.title, str(order.program_count)]
         for index, order in enumerate(orders, start=1)
     ]
-    rows.append(["总计", "总计", "", "", str(total)])
     elements = [
-        paragraph_element(summary, styles["Normal"], 480),
-        table_element(headers, rows, [650, 2100, 2100, 3300, 850]),
+        clone_paragraph_with_text(prototypes.demand_summary, summary),
+        clone_table_with_data(
+            prototypes.demand_table,
+            headers,
+            rows,
+            footer=["总计", "", "", "", str(total)],
+        ),
     ]
     for order in orders:
         elements.append(
-            paragraph_element(f"{order.work_order_no}_{order.title}", styles["Heading 3"])
+            clone_paragraph_with_text(
+                prototypes.work_order_heading,
+                f"{order.work_order_no}_{order.title}",
+            )
         )
         elements.append(
-            paragraph_element(f"需求口径：{order.description}", styles["Normal"], 480)
+            clone_paragraph_with_text(
+                prototypes.work_order_body,
+                f"需求口径：{order.description}",
+            )
         )
     return elements
 
 
-def _build_api_section(orders, styles):
+def _build_api_section(orders, prototypes):
     elements = []
     for order in orders:
         for interface in order.interfaces:
             interface.purpose = build_interface_purpose(order, interface)
-            elements.append(paragraph_element(interface.chinese_name, styles["Heading 3"]))
-            elements.append(paragraph_element(interface.purpose, styles["Normal"], 480))
-            elements.append(paragraph_element("计划供数方式：API接口对外服务", styles["Normal"]))
-            elements.append(paragraph_element("计划更新频率：无", styles["Normal"]))
-            elements.append(paragraph_element("接口输入参数：", styles["Normal"]))
+            elements.append(
+                clone_paragraph_with_text(prototypes.interface_heading, interface.chinese_name)
+            )
+            elements.append(
+                clone_paragraph_with_text(prototypes.interface_purpose, interface.purpose)
+            )
+            elements.append(
+                clone_paragraph_with_text(
+                    prototypes.supply_method, "计划供数方式：API接口对外服务"
+                )
+            )
+            elements.append(
+                clone_paragraph_with_text(prototypes.update_frequency, "计划更新频率：无")
+            )
+            elements.append(clone_paragraph_with_text(prototypes.input_label, "接口输入参数："))
             for group in interface.input_groups:
                 if group.label:
-                    elements.append(paragraph_element(f"{group.label}：", styles["Body Text"]))
-                elements.append(table_element(group.headers, group.rows, group.column_widths or None))
-            elements.append(paragraph_element("接口输出参数：", styles["Normal"]))
+                    elements.append(
+                        clone_paragraph_with_text(prototypes.input_label, f"{group.label}：")
+                    )
+                elements.append(
+                    clone_table_with_data(
+                        prototypes.input_parameter_table,
+                        group.headers,
+                        group.rows,
+                        group.column_widths or None,
+                    )
+                )
+            elements.append(clone_paragraph_with_text(prototypes.output_label, "接口输出参数："))
             for group in interface.output_groups:
                 if group.label:
-                    elements.append(paragraph_element(f"{group.label}：", styles["Body Text"]))
-                elements.append(table_element(group.headers, group.rows, group.column_widths or None))
+                    elements.append(
+                        clone_paragraph_with_text(prototypes.output_label, f"{group.label}：")
+                    )
+                elements.append(
+                    clone_table_with_data(
+                        prototypes.output_parameter_table,
+                        group.headers,
+                        group.rows,
+                        group.column_widths or None,
+                    )
+                )
     return elements
 
 
@@ -243,16 +427,31 @@ def build_api_requirement_document(excel_path, service_dir, template_path, outpu
             parse_api_report(order.self_report_path, order.interfaces)
 
     document = Document(template_path)
-    styles = _style_ids(document)
     business_heading = find_heading(document, "Heading 2", "业务场景")
     demand_intro_heading = find_heading(document, "Heading 2", "需求说明")
     demand_heading = find_heading(document, "Heading 2", "需求清单")
     shared_heading = find_heading(document, "Heading 2", "共享开放方案")
     api_heading = find_heading(document, "Heading 2", "API接口清单")
+    prototypes = _capture_template_prototypes(
+        document,
+        business_heading,
+        demand_intro_heading,
+        demand_heading,
+        shared_heading,
+        api_heading,
+    )
 
-    _build_business_scene(document, orders, styles, business_heading, demand_intro_heading)
-    replace_between(demand_heading._p, shared_heading._p, _build_demand_section(orders, styles))
-    replace_after(api_heading._p, _build_api_section(orders, styles))
+    replace_between(
+        business_heading._p,
+        demand_intro_heading._p,
+        _build_business_scene(orders, prototypes),
+    )
+    replace_between(
+        demand_heading._p,
+        shared_heading._p,
+        _build_demand_section(orders, prototypes),
+    )
+    replace_after(api_heading._p, _build_api_section(orders, prototypes))
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

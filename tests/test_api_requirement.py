@@ -8,7 +8,11 @@ from unittest import mock
 
 import openpyxl
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor, Twips
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +74,58 @@ def add_parameter_table(document, headers, rows, widths=None):
         cells = table.add_row().cells
         for index, value in enumerate(values):
             cells[index].text = value
+    return table
+
+
+def add_numbering(paragraph, num_id):
+    properties = paragraph._p.get_or_add_pPr()
+    existing = properties.find(qn("w:numPr"))
+    if existing is not None:
+        properties.remove(existing)
+    numbering = OxmlElement("w:numPr")
+    level = OxmlElement("w:ilvl")
+    level.set(qn("w:val"), "0")
+    numbering_id = OxmlElement("w:numId")
+    numbering_id.set(qn("w:val"), str(num_id))
+    numbering.extend([level, numbering_id])
+    properties.append(numbering)
+
+
+def set_paragraph_format(paragraph, *, font="宋体", size=12, first_line=None, line_spacing=None):
+    if first_line is not None:
+        paragraph.paragraph_format.first_line_indent = Twips(first_line)
+    if line_spacing is not None:
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:line"), str(line_spacing))
+        spacing.set(qn("w:lineRule"), "auto")
+        paragraph._p.get_or_add_pPr().append(spacing)
+    for run in paragraph.runs:
+        run.font.name = font
+        run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), font)
+        run.font.size = Pt(size)
+
+
+def set_table_format(table, header_fill):
+    table.style = "Table Grid"
+    table.autofit = True
+    for row_index, row in enumerate(table.rows):
+        for cell in row.cells:
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            cell_properties = cell._tc.get_or_add_tcPr()
+            shading = cell_properties.find(qn("w:shd"))
+            if shading is None:
+                shading = OxmlElement("w:shd")
+                cell_properties.append(shading)
+            shading.set(qn("w:val"), "clear")
+            shading.set(qn("w:fill"), header_fill if row_index == 0 else "FFFFFF")
+            for paragraph in cell.paragraphs:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if row_index == 0 else WD_ALIGN_PARAGRAPH.LEFT
+                for run in paragraph.runs:
+                    run.font.name = "宋体"
+                    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "宋体")
+                    run.font.size = Pt(9 if row_index == 0 else 10.5)
+                    run.font.bold = row_index == 0
+                    run.font.color.rgb = RGBColor(0, 0, 0)
 
 
 def make_self_report(path: Path):
@@ -152,28 +208,60 @@ def make_api_template(path: Path):
         revision.rows[0].cells[index].text = value
     document.add_heading("业务场景", level=2)
     document.add_paragraph("上海市大数据中心通过API接口开展公共数据共享开放。")
-    document.add_paragraph("旧业务场景内容。")
+    business_scene = document.add_paragraph("旧业务场景内容。")
+    set_paragraph_format(business_scene, first_line=480, line_spacing=360)
+    document.add_paragraph("BUSINESS_STATIC_AFTER")
     document.add_heading("需求说明", level=2)
     document.add_heading("需求清单", level=2)
-    document.add_paragraph("服务周期内，共有3张需求单。")
-    demand = document.add_table(rows=2, cols=5)
+    demand_summary = document.add_paragraph("服务周期内，共有3张需求单。")
+    set_paragraph_format(demand_summary, size=11)
+    demand = document.add_table(rows=3, cols=5)
     for index, value in enumerate(["序号", "对应需求单编号", "对应工单编号", "工单内容", "涉及共享任务数量（个）"]):
         demand.rows[0].cells[index].text = value
-    document.add_heading("OLD-WO_旧工单", level=3)
-    document.add_paragraph("需求口径：旧内容。")
+    for index, value in enumerate(["1", "REQ-OLD", "WO-OLD", "旧工单", "1"]):
+        demand.rows[1].cells[index].text = value
+    demand.rows[2].cells[0].merge(demand.rows[2].cells[1]).text = "总计"
+    demand.rows[2].cells[4].text = "1"
+    set_table_format(demand, "B4C6E7")
+    work_order_heading = document.add_heading("OLD-WO_旧工单", level=3)
+    add_numbering(work_order_heading, 3)
+    set_paragraph_format(work_order_heading, font="微软雅黑 Light", size=14)
+    demand_body = document.add_paragraph("需求口径：旧内容。")
+    add_numbering(demand_body, 0)
+    set_paragraph_format(demand_body, first_line=480)
     document.add_heading("共享开放方案", level=2)
     document.add_paragraph("STATIC_SHARED_SOLUTION_MARKER")
     document.add_heading("API接口清单", level=2)
-    document.add_heading("企业电子票据证件号码校验接口", level=3)
-    document.add_paragraph("旧接口说明。")
-    document.add_paragraph("计划供数方式：API接口对外服务")
-    document.add_paragraph("计划更新频率：无")
-    document.add_paragraph("接口输入参数：")
-    add_parameter_table(document, ["序号", "参数名", "名称"], [["1", "old", "旧参数"]])
-    document.add_paragraph("接口输出参数：")
-    add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "oldResult", "旧结果"]])
+    interface_heading = document.add_heading("企业电子票据证件号码校验接口", level=3)
+    add_numbering(interface_heading, 4)
+    set_paragraph_format(interface_heading, font="微软雅黑 Light", size=14)
+    purpose = document.add_paragraph("旧接口说明。")
+    add_numbering(purpose, 0)
+    set_paragraph_format(purpose, first_line=480)
+    supply = document.add_paragraph("计划供数方式：API接口对外服务")
+    add_numbering(supply, 5)
+    set_paragraph_format(supply)
+    frequency = document.add_paragraph("计划更新频率：无")
+    add_numbering(frequency, 5)
+    set_paragraph_format(frequency)
+    input_label = document.add_paragraph("接口输入参数：")
+    set_paragraph_format(input_label, first_line=480)
+    input_table = add_parameter_table(document, ["序号", "参数名", "名称"], [["1", "old", "旧参数"]])
+    set_table_format(input_table, "D9D9D9")
+    output_label = document.add_paragraph("接口输出参数：")
+    set_paragraph_format(output_label, first_line=480)
+    output_table = add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "oldResult", "旧结果"]])
+    set_table_format(output_table, "E7E6E6")
     document.save(path)
     return path
+
+
+def paragraph_with_text(document, text):
+    return next(paragraph for paragraph in document.paragraphs if paragraph.text.strip() == text)
+
+
+def xml_or_none(element):
+    return None if element is None else element.xml
 
 
 def make_ole_anchor_package(path: Path):
@@ -325,6 +413,169 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertIn("计划供数方式：API接口对外服务", text)
         self.assertNotIn("企业电子票据证件号码校验接口", text)
         self.assertNotIn("旧接口说明", text)
+
+    def test_generated_dynamic_blocks_reuse_template_direct_formatting(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_requirement
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report(temp / "self-test.docx")
+            template_path = make_api_template(temp / "template.docx")
+            output_path = temp / "01-需求文档.docx"
+            with mock.patch.object(
+                api_requirement,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+            ), mock.patch.object(api_requirement, "update_toc_via_com"):
+                api_requirement.build_api_requirement_document(
+                    excel_path=ledger,
+                    service_dir="N07-API接口开发",
+                    template_path=template_path,
+                    output_path=output_path,
+                )
+
+            template = Document(template_path)
+            output = Document(output_path)
+            output_text = "\n".join(paragraph.text for paragraph in output.paragraphs)
+            self.assertIn("BUSINESS_STATIC_AFTER", output_text)
+            self.assertNotIn("旧业务场景内容。", output_text)
+            paragraph_pairs = [
+                ("旧业务场景内容。", "在本服务周期内，围绕市公安局-出入境证件身份认证-共享接口开展API接口开发，共提供3个API接口服务。"),
+                ("服务周期内，共有3张需求单。", "服务周期内，共有1张需求单，1张工单涉及3个API接口服务。具体需求单、工单和产出如下表："),
+                ("OLD-WO_旧工单", "WO-1_市公安局-出入境证件身份认证-共享接口"),
+                ("需求口径：旧内容。", "需求口径：升级离境退税掌上办平台的出入境记录校验能力。"),
+                ("企业电子票据证件号码校验接口", "境外人员获取令牌接口"),
+                ("计划供数方式：API接口对外服务", "计划供数方式：API接口对外服务"),
+                ("计划更新频率：无", "计划更新频率：无"),
+                ("接口输入参数：", "接口输入参数："),
+                ("接口输出参数：", "接口输出参数："),
+            ]
+            for template_text, output_text in paragraph_pairs:
+                expected = paragraph_with_text(template, template_text)
+                actual = paragraph_with_text(output, output_text)
+                self.assertEqual(xml_or_none(actual._p.pPr), xml_or_none(expected._p.pPr))
+                self.assertEqual(
+                    xml_or_none(actual.runs[0]._r.rPr),
+                    xml_or_none(expected.runs[0]._r.rPr),
+                )
+
+            for table_index in (1, 2, 3):
+                expected_table = template.tables[table_index]
+                actual_table = output.tables[table_index]
+                self.assertEqual(actual_table._tbl.tblPr.xml, expected_table._tbl.tblPr.xml)
+                self.assertIsNotNone(
+                    actual_table.rows[0]._tr.find(".//" + qn("w:tblHeader"))
+                )
+                for row_index in (0, 1):
+                    expected_cell = expected_table.rows[row_index].cells[0]
+                    actual_cell = actual_table.rows[row_index].cells[0]
+                    self.assertEqual(actual_cell._tc.tcPr.xml, expected_cell._tc.tcPr.xml)
+                    self.assertEqual(
+                        xml_or_none(actual_cell.paragraphs[0]._p.pPr),
+                        xml_or_none(expected_cell.paragraphs[0]._p.pPr),
+                    )
+                    self.assertEqual(
+                        xml_or_none(actual_cell.paragraphs[0].runs[0]._r.rPr),
+                        xml_or_none(expected_cell.paragraphs[0].runs[0]._r.rPr),
+                    )
+
+            four_column_table = next(
+                table
+                for table in output.tables
+                if len(table.columns) == 4
+                and "类型" in [cell.text for cell in table.rows[0].cells]
+            )
+            widths = [
+                int(column.get(qn("w:w")))
+                for column in four_column_table._tbl.tblGrid.gridCol_lst
+            ]
+            self.assertGreater(widths[1], widths[0])
+            self.assertGreater(widths[1], widths[2])
+
+    def test_business_scene_accepts_a_single_template_paragraph(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_requirement
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report(temp / "self-test.docx")
+            template_path = make_api_template(temp / "template.docx")
+            template = Document(template_path)
+            for paragraph in list(template.paragraphs):
+                if paragraph.text in {
+                    "上海市大数据中心通过API接口开展公共数据共享开放。",
+                    "BUSINESS_STATIC_AFTER",
+                }:
+                    paragraph._p.getparent().remove(paragraph._p)
+            template.save(template_path)
+            output_path = temp / "01-需求文档.docx"
+            with mock.patch.object(
+                api_requirement,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+            ), mock.patch.object(api_requirement, "update_toc_via_com"):
+                api_requirement.build_api_requirement_document(
+                    excel_path=ledger,
+                    service_dir="N07-API接口开发",
+                    template_path=template_path,
+                    output_path=output_path,
+                )
+
+            output = Document(output_path)
+            text = "\n".join(paragraph.text for paragraph in output.paragraphs)
+
+        self.assertIn("共提供3个API接口服务", text)
+        self.assertNotIn("旧业务场景内容。", text)
+
+    def test_demand_work_order_headings_reuse_template_numbering_for_multiple_orders(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_requirement
+        from materials.shared.ledger import ApiWorkOrder
+
+        orders = [
+            ApiWorkOrder("REQ-1", "WO-1", "第一张工单", "第一项需求。", 1, (2,), []),
+            ApiWorkOrder("REQ-2", "WO-2", "第二张工单", "第二项需求。", 1, (3,), []),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template_path = make_api_template(temp / "template.docx")
+            output_path = temp / "01-需求文档.docx"
+            with mock.patch.object(api_requirement, "read_api_work_orders", return_value=orders), mock.patch.object(
+                api_requirement,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": temp / "one.docx", "WO-2": temp / "two.docx"},
+            ), mock.patch.object(api_requirement, "parse_api_report"), mock.patch.object(
+                api_requirement, "update_toc_via_com"
+            ):
+                api_requirement.build_api_requirement_document(
+                    excel_path=temp / "ledger.xlsx",
+                    service_dir="N07-API接口开发",
+                    template_path=template_path,
+                    output_path=output_path,
+                )
+
+            output = Document(output_path)
+            headings = [
+                paragraph
+                for paragraph in output.paragraphs
+                if paragraph.text in {"WO-1_第一张工单", "WO-2_第二张工单"}
+            ]
+
+        self.assertEqual([paragraph.text for paragraph in headings], ["WO-1_第一张工单", "WO-2_第二张工单"])
+        self.assertEqual(
+            [paragraph._p.pPr.numPr.numId.val for paragraph in headings],
+            [3, 3],
+        )
+        self.assertEqual(
+            [paragraph._p.pPr.numPr.ilvl.val for paragraph in headings],
+            [0, 0],
+        )
 
     def test_purpose_text_is_grounded_and_avoids_banned_ai_phrases(self):
         if str(SCRIPTS) not in sys.path:
