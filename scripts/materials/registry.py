@@ -40,6 +40,16 @@ SPECS = {
         module="materials.n07.api_code_doc",
         function="build_api_code_document",
     ),
+    "04-API接口开发_接口测试报告": MaterialSpec(
+        default_filename="04-接口测试报告（含《API接口列表》）.docx",
+        module="materials.n07.api_test_report",
+        function="build_api_test_report_document",
+    ),
+    "04-接口测试报告（含《API接口列表》）": MaterialSpec(
+        default_filename="04-接口测试报告（含《API接口列表》）.docx",
+        module="materials.n07.api_test_report",
+        function="build_api_test_report_document",
+    ),
 }
 
 
