@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import sys
 import tempfile
@@ -12,12 +13,15 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor, Twips
+from docx.shared import Inches, Pt, RGBColor, Twips
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 FILL_SCRIPT = SCRIPTS / "fill_document.py"
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 def load_fill_document_module():
@@ -200,6 +204,44 @@ def make_self_report(path: Path):
     return path
 
 
+def add_picture_paragraph(document, image_path: Path):
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.add_run().add_picture(str(image_path), width=Inches(1))
+    return paragraph
+
+
+def make_self_report_with_code_images(path: Path):
+    image_path = path.with_name("screenshot.png")
+    image_path.write_bytes(PNG_1X1)
+    document = Document()
+    document.add_heading("测试目的", level=1)
+    document.add_paragraph("验证接口代码规范性。")
+    document.add_heading("4.测试内容", level=1)
+    for name in [
+        "境外人员获取令牌接口",
+        "境外人员身份认证申请接口",
+        "境外人员身份认证请求接口",
+    ]:
+        document.add_heading(name, level=2)
+        document.add_paragraph("共享接口命名规范性")
+        add_picture_paragraph(document, image_path)
+        document.add_paragraph("测试结果：符合规范要求，测试通过。")
+        document.add_paragraph("输入参数")
+        add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "userId", "用户ID"]])
+        document.add_paragraph("输出参数")
+        add_parameter_table(document, ["参数", "参数说明"], [["success", "是否成功"]])
+        document.add_paragraph("共享任务开发代码检查")
+        add_picture_paragraph(document, image_path)
+        document.add_paragraph("测试结果：符合规范要求，测试通过。")
+        document.add_paragraph("测试结果")
+        add_picture_paragraph(document, image_path)
+    document.add_heading("测试结论", level=1)
+    document.add_paragraph("全部自测通过。")
+    document.save(path)
+    return path
+
+
 def make_api_template(path: Path):
     document = Document()
     document.add_heading("需求文档", level=1)
@@ -252,6 +294,28 @@ def make_api_template(path: Path):
     set_paragraph_format(output_label, first_line=480)
     output_table = add_parameter_table(document, ["序号", "参数项", "名称"], [["1", "oldResult", "旧结果"]])
     set_table_format(output_table, "E7E6E6")
+    document.save(path)
+    return path
+
+
+def make_api_code_template(path: Path):
+    image_path = path.with_name("template-screenshot.png")
+    image_path.write_bytes(PNG_1X1)
+    document = Document()
+    document.add_paragraph("API接口开发代码")
+    document.add_paragraph("开发代码")
+    document.add_heading("API接口开发列表", level=1)
+    table = document.add_table(rows=2, cols=4)
+    for index, value in enumerate(["序号", "接口代码", "接口名称", "责任委办"]):
+        table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "old_api", "旧接口", "应用开发部"]):
+        table.rows[1].cells[index].text = value
+    set_table_format(table, "D9EAF7")
+    document.add_heading("接口模型明细", level=1)
+    interface_heading = document.add_heading("旧接口", level=2)
+    set_paragraph_format(interface_heading, font="微软雅黑 Light", size=14)
+    add_picture_paragraph(document, image_path)
+    add_picture_paragraph(document, image_path)
     document.save(path)
     return path
 
@@ -353,6 +417,13 @@ class ApiRequirementTest(unittest.TestCase):
             output = module.resolve_output_path(temp_dir, "02-API接口开发_数据模型设计")
 
         self.assertEqual(Path(output).name, "02- 数据模型设计（API）.docx")
+
+    def test_api_code_registration_uses_public_output_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "03-API接口开发_接口开发代码")
+
+        self.assertEqual(Path(output).name, "03-接口开发代码.docx")
 
     def test_read_api_work_orders_groups_merged_rows_and_counts_programs_once(self):
         if str(SCRIPTS) not in sys.path:
@@ -505,6 +576,58 @@ class ApiRequirementTest(unittest.TestCase):
                 for table in document.tables
             )
         )
+
+    def test_parse_api_code_report_images_keeps_only_requested_screenshot_sections(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_code_doc import parse_api_code_report_images
+        from materials.shared.ledger import ApiInterface
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            report = make_self_report_with_code_images(temp / "self-test.docx")
+            interfaces = [ApiInterface("境外人员获取令牌接口", "token_api", 2)]
+            images = parse_api_code_report_images(report, interfaces, temp / "work")
+
+        self.assertEqual(len(images["境外人员获取令牌接口"]["共享接口命名规范性"]), 1)
+        self.assertEqual(len(images["境外人员获取令牌接口"]["共享任务开发代码检查"]), 1)
+
+    def test_build_api_code_document_replaces_list_and_model_detail_images(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07 import api_code_doc
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_api_ledger(temp / "ledger.xlsx")
+            report = make_self_report_with_code_images(temp / "self-test.docx")
+            template = make_api_code_template(temp / "template.docx")
+            output = temp / "03-接口开发代码.docx"
+            with mock.patch.object(
+                api_code_doc,
+                "extract_embedded_docx_by_work_order",
+                return_value={"WO-1": report},
+                create=True,
+            ), mock.patch.object(api_code_doc, "update_toc_via_com", create=True):
+                api_code_doc.build_api_code_document(
+                    excel_path=ledger,
+                    service_dir="N07-API接口开发",
+                    template_path=template,
+                    output_path=output,
+                )
+
+            document = Document(output)
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+
+        self.assertIn("境外人员获取令牌接口", text)
+        self.assertIn("境外人员身份认证申请接口", text)
+        self.assertIn("境外人员身份认证请求接口", text)
+        self.assertNotIn("旧接口", text)
+        self.assertEqual(len(document.tables), 1)
+        self.assertEqual(len(document.tables[0].rows), 4)
+        self.assertEqual(document.tables[0].rows[1].cells[1].text, "token_api")
+        self.assertEqual(document.tables[0].rows[1].cells[3].text, "上海市大数据中心")
+        self.assertEqual(len(document.inline_shapes), 6)
 
     def test_generated_dynamic_blocks_reuse_template_direct_formatting(self):
         if str(SCRIPTS) not in sys.path:
@@ -731,6 +854,28 @@ class ApiRequirementTest(unittest.TestCase):
                     excel_path="ledger.xlsx",
                     service_dir="N07-API接口开发",
                     material_type="02-API接口开发_数据模型设计",
+                    template_path="template.docx",
+                    output_path="out.docx",
+                )
+
+        self.assertEqual(result, "out.docx")
+        builder.assert_called_once_with(
+            excel_path="ledger.xlsx",
+            service_dir="N07-API接口开发",
+            template_path="template.docx",
+            output_path="out.docx",
+        )
+
+    def test_fill_document_dispatches_registered_api_code_material(self):
+        module = load_fill_document_module()
+        builder = mock.Mock(return_value="out.docx")
+        spec = mock.Mock(default_filename="03-接口开发代码.docx")
+        with mock.patch.object(module, "get_material_spec", return_value=spec):
+            with mock.patch.object(module, "load_material_builder", return_value=builder, create=True):
+                result = module.fill_document(
+                    excel_path="ledger.xlsx",
+                    service_dir="N07-API接口开发",
+                    material_type="03-API接口开发_接口开发代码",
                     template_path="template.docx",
                     output_path="out.docx",
                 )

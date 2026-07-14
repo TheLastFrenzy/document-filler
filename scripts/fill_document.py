@@ -3658,7 +3658,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-API接口开发_需求文档, 02-API接口开发_数据模型设计, 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-API接口开发_需求文档, 02-API接口开发_数据模型设计, 03-API接口开发_接口开发代码, 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -3668,7 +3668,7 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
 def main():
     parser = argparse.ArgumentParser(description="验收文档自动填充工具")
     parser.add_argument("--service-dir", required=True, help="服务目录筛选值，如 N08-数据报表服务")
-    parser.add_argument("--material-type", required=True, help="材料类型，如 01-API接口开发_需求文档、02-API接口开发_数据模型设计、01-数据报表_需求文档 或 02-数据报表_设计文档")
+    parser.add_argument("--material-type", required=True, help="材料类型，如 01-API接口开发_需求文档、02-API接口开发_数据模型设计、03-API接口开发_接口开发代码、01-数据报表_需求文档 或 02-数据报表_设计文档")
     parser.add_argument("--excel", required=True, help="台账清单Excel文件路径")
     parser.add_argument("--template", required=True, help="Word模板文件路径")
     parser.add_argument("--output", required=True, help="输出Word文档路径")

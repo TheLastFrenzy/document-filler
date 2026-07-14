@@ -30,6 +30,16 @@ SPECS = {
         module="materials.n07.api_data_model",
         function="build_api_data_model_document",
     ),
+    "03-API接口开发_接口开发代码": MaterialSpec(
+        default_filename="03-接口开发代码.docx",
+        module="materials.n07.api_code_doc",
+        function="build_api_code_document",
+    ),
+    "03-接口开发代码": MaterialSpec(
+        default_filename="03-接口开发代码.docx",
+        module="materials.n07.api_code_doc",
+        function="build_api_code_document",
+    ),
 }
 
 
