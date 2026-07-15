@@ -30,6 +30,7 @@ from materials.shared.word_sections import (
 
 
 TEST_RESULT_LABEL = "测试结果"
+TEST_RESULT_DESCRIPTION = "测试结果与预期结果一致，测试通过。"
 
 
 @dataclass(frozen=True)
@@ -335,6 +336,7 @@ def _build_content_elements(document, orders, report_images_by_order, prototypes
             )
             elements.append(clone_paragraph_with_text(prototypes.result_heading, "测试结果"))
             images = report_images_by_order[order.work_order_no][interface.chinese_name]
+            elements.append(clone_paragraph_with_text(prototypes.result_body, TEST_RESULT_DESCRIPTION))
             elements.append(_image_paragraph_element(document, prototypes.result_body, images[0]))
     return elements
 

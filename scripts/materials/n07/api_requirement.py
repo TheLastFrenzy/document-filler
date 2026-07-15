@@ -30,6 +30,40 @@ STOP_LABELS = {
     "测试结论",
 }
 
+CHINESE_DESCRIPTION_HEADERS = (
+    "名称",
+    "参数说明",
+    "字段中文名",
+    "字段中文名称",
+    "中文名称",
+    "数据项名称",
+    "字段注释",
+    "说明",
+    "备注",
+)
+LOW_PRIORITY_NAME_HEADERS = (
+    "字段名称",
+    "参数名称",
+)
+NON_DESCRIPTION_HEADERS = {
+    "序号",
+    "参数",
+    "参数项",
+    "参数名",
+    "字段英文名",
+    "英文名称",
+    "类型",
+    "字段类型",
+    "是否必选",
+    "是否必填",
+    "默认",
+    "不可为空",
+    "唯一",
+    "主键/外键",
+    "测试数据1",
+    "结果数据",
+}
+
 
 @dataclass(frozen=True)
 class ApiRequirementPrototypes:
@@ -139,11 +173,59 @@ def parse_api_report(report_path: Path, interfaces: list[ApiInterface]) -> list[
     return interfaces
 
 
+def _header_key(value):
+    return re.sub(r"\s+", "", str(value or "").strip().rstrip("：:"))
+
+
+def _has_chinese(value):
+    return bool(re.search(r"[\u4e00-\u9fff]", str(value or "")))
+
+
+def _clean_parameter_description(value):
+    return re.sub(r"\s+", "", str(value or "").strip())
+
+
+def _preferred_parameter_description(headers, row):
+    cells = [_clean_parameter_description(cell) for cell in row]
+    indexed = [
+        (_header_key(headers[index]) if index < len(headers) else "", cell)
+        for index, cell in enumerate(cells)
+        if cell
+    ]
+
+    preferred = [
+        cell
+        for header, cell in indexed
+        if header in CHINESE_DESCRIPTION_HEADERS
+    ]
+    low_priority_names = [
+        cell
+        for header, cell in indexed
+        if header in LOW_PRIORITY_NAME_HEADERS
+    ]
+    fallback_chinese = [
+        cell
+        for header, cell in indexed
+        if header not in NON_DESCRIPTION_HEADERS and _has_chinese(cell)
+    ]
+
+    for candidates in (preferred, fallback_chinese, low_priority_names):
+        for cell in candidates:
+            if _has_chinese(cell):
+                return cell
+    for candidates in (preferred, low_priority_names):
+        for cell in candidates:
+            return cell
+    if len(cells) > 1 and cells[1]:
+        return cells[1]
+    return cells[0] if cells else ""
+
+
 def _parameter_descriptions(groups, limit=3):
     values = []
     for group in groups:
         for row in group.rows:
-            value = row[1].strip() if len(row) > 1 else row[0].strip()
+            value = _preferred_parameter_description(group.headers, row)
             if value and value not in values:
                 values.append(value)
             if len(values) >= limit:
@@ -157,6 +239,31 @@ def _join_chinese(values):
     if len(values) == 1:
         return values[0]
     return "、".join(values)
+
+
+def _sentence_fragment(value):
+    text = re.sub(r"\s+", "", str(value or "").strip())
+    return text.strip("。；;，,、 ")
+
+
+def _summary_sentence_fragment(value):
+    text = re.sub(r"\s+", "", str(value or "").strip())
+    first = re.split(r"[。；;]", text, maxsplit=1)[0]
+    if len(first) > 80:
+        first = first[:80]
+    return first.strip("。；;，,、 ")
+
+
+def _work_order_background(order):
+    title = _sentence_fragment(order.title)
+    description = _summary_sentence_fragment(order.description)
+    if title and description and description not in title:
+        return f"围绕{title}，{description}，"
+    if title:
+        return f"围绕{title}，"
+    if description:
+        return f"结合{description}，"
+    return ""
 
 
 def build_interface_purpose(order, interface):
@@ -173,6 +280,7 @@ def build_interface_purpose(order, interface):
         text = f"该接口根据{inputs}查询业务数据并返回{outputs}，用于{order.title}相关信息核验。"
     else:
         text = f"该接口接收{inputs}并返回{outputs}，用于处理{order.title}对应的数据共享请求。"
+    text = f"{_work_order_background(order)}{text}"
     for banned in ("赋能", "彰显", "至关重要", "确保", "重要支撑"):
         text = text.replace(banned, "")
     return re.sub(r"\s+", "", text)

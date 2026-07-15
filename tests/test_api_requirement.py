@@ -237,6 +237,7 @@ def make_self_report_with_code_images(path: Path):
         document.add_paragraph("测试结果：符合规范要求，测试通过。")
         document.add_paragraph("测试结果")
         add_picture_paragraph(document, image_path)
+        add_picture_paragraph(document, image_path)
     document.add_heading("测试结论", level=1)
     document.add_paragraph("全部自测通过。")
     document.save(path)
@@ -815,6 +816,7 @@ class ApiRequirementTest(unittest.TestCase):
             ["序号", "参数项", "名称", "结果数据"],
         )
         self.assertEqual(len(document.inline_shapes), 3)
+        self.assertEqual(text.count("测试结果与预期结果一致，测试通过。"), 3)
 
     def test_api_test_report_doc_conversion_creates_missing_work_directory(self):
         if str(SCRIPTS) not in sys.path:
@@ -1030,6 +1032,107 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertIn("业务流水号", purpose)
         for banned in ("赋能", "至关重要", "确保", "重要支撑"):
             self.assertNotIn(banned, purpose)
+
+    def test_purpose_text_prefers_chinese_parameter_annotations(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_requirement import build_interface_purpose
+        from materials.shared.ledger import ApiInterface, ApiWorkOrder, ParameterGroup
+
+        interface = ApiInterface(
+            chinese_name="境外人员获取令牌接口",
+            english_name="token_api",
+            source_row=2,
+            input_groups=[
+                ParameterGroup(
+                    "",
+                    ["序号", "参数项", "名称"],
+                    [["1", "userId", "用户ID"], ["2", "password", "密码"]],
+                )
+            ],
+            output_groups=[
+                ParameterGroup(
+                    "",
+                    ["参数", "参数说明", "备注"],
+                    [["access_token", "访问令牌", "后续接口调用凭证"]],
+                )
+            ],
+        )
+        order = ApiWorkOrder(
+            demand_no="REQ-1",
+            work_order_no="WO-1",
+            title="出入境证件身份认证",
+            description="升级离境退税掌上办平台的出入境记录校验能力。",
+            program_count=1,
+            source_rows=(2,),
+            interfaces=[interface],
+        )
+
+        purpose = build_interface_purpose(order, interface)
+
+        self.assertIn("用户ID", purpose)
+        self.assertIn("密码", purpose)
+        self.assertIn("访问令牌", purpose)
+        self.assertNotIn("userId", purpose)
+        self.assertNotIn("password", purpose)
+
+    def test_purpose_text_summarizes_work_order_background(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_requirement import build_interface_purpose
+        from materials.shared.ledger import ApiInterface, ApiWorkOrder, ParameterGroup
+
+        interface = ApiInterface(
+            chinese_name="目录链目录信息查询接口",
+            english_name="catalog_query_api",
+            source_row=2,
+            input_groups=[ParameterGroup("", ["参数", "参数说明"], [["catalogCode", "目录编码"]])],
+            output_groups=[ParameterGroup("", ["参数", "参数说明"], [["catalogName", "目录名称"]])],
+        )
+        order = ApiWorkOrder(
+            demand_no="REQ-1",
+            work_order_no="WO-1",
+            title="一本账-大数据中心_一数一档数据接口",
+            description="支撑一本账目录链路和数据资源信息核验。",
+            program_count=1,
+            source_rows=(2,),
+            interfaces=[interface],
+        )
+
+        purpose = build_interface_purpose(order, interface)
+
+        self.assertIn("围绕一本账-大数据中心_一数一档数据接口", purpose)
+        self.assertIn("支撑一本账目录链路和数据资源信息核验", purpose)
+        self.assertIn("目录编码", purpose)
+        self.assertIn("目录名称", purpose)
+
+    def test_purpose_text_uses_concise_work_order_background(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_requirement import build_interface_purpose
+        from materials.shared.ledger import ApiInterface, ApiWorkOrder, ParameterGroup
+
+        interface = ApiInterface(
+            chinese_name="目录链目录信息查询接口",
+            english_name="catalog_query_api",
+            source_row=2,
+            input_groups=[ParameterGroup("", ["参数", "参数说明"], [["catalogCode", "目录编码"]])],
+            output_groups=[ParameterGroup("", ["参数", "参数说明"], [["catalogName", "目录名称"]])],
+        )
+        order = ApiWorkOrder(
+            demand_no="REQ-1",
+            work_order_no="WO-1",
+            title="一本账-大数据中心_一数一档数据接口",
+            description="支撑一本账目录链路和数据资源信息核验。后续详细描述不应重复到每个接口作用中。",
+            program_count=1,
+            source_rows=(2,),
+            interfaces=[interface],
+        )
+
+        purpose = build_interface_purpose(order, interface)
+
+        self.assertIn("支撑一本账目录链路和数据资源信息核验", purpose)
+        self.assertNotIn("后续详细描述不应重复", purpose)
 
     def test_fill_document_dispatches_registered_api_requirement_material(self):
         module = load_fill_document_module()
