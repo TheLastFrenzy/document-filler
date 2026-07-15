@@ -50,6 +50,16 @@ SPECS = {
         module="materials.n07.api_test_report",
         function="build_api_test_report_document",
     ),
+    "05-API接口开发_作业上线记录": MaterialSpec(
+        default_filename="05-作业上线记录（API）.doc",
+        module="materials.n07.api_launch_record",
+        function="build_api_launch_record_document",
+    ),
+    "05-作业上线记录（API）": MaterialSpec(
+        default_filename="05-作业上线记录（API）.doc",
+        module="materials.n07.api_launch_record",
+        function="build_api_launch_record_document",
+    ),
 }
 
 
