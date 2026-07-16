@@ -60,6 +60,11 @@ SPECS = {
         module="materials.n07.api_launch_record",
         function="build_api_launch_record_document",
     ),
+    "01-库表落地方式_需求文档": MaterialSpec(
+        default_filename="01-需求文档.docx",
+        module="materials.n07.table_landing_requirement",
+        function="build_table_landing_requirement_document",
+    ),
 }
 
 
