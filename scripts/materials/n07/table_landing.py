@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import tempfile
+import zipfile
 
 import openpyxl
 
@@ -37,6 +39,9 @@ class TableLandingTask:
     landing_database: str
     landing_table: str
     business_scene: str
+    landing_data_count: str = ""
+    dispatch_description: str = ""
+    target_volume_image: bytes | None = None
 
 
 @dataclass
@@ -49,6 +54,7 @@ class TableLandingWorkOrder:
     source_rows: tuple[int, ...]
     source_tables: list[str]
     target_user: str
+    database_type: str
     update_cycle: str
     update_requirement: str
     attachment_path: Path | None = None
@@ -72,6 +78,7 @@ def _read_order_rows(excel_path, service_dir):
         raise ValueError(f"台账缺少必要列: {', '.join(missing)}")
 
     columns = {header: headers.index(header) + 1 for header in REQUIRED_TABLE_LANDING_HEADERS}
+    database_type_column = headers.index("下发前置机数据库类型") + 1 if "下发前置机数据库类型" in headers else None
     get = merged_value_getter(sheet)
     grouped = {}
     order_keys = []
@@ -91,6 +98,7 @@ def _read_order_rows(excel_path, service_dir):
                 "source_rows": [],
                 "source_tables": [],
                 "target_user": get(row, columns["下发前置机中文名"]),
+                "database_type": get(row, database_type_column) if database_type_column else "",
                 "update_cycle": get(row, columns["数据统计分析执行周期"]),
                 "update_requirement": get(row, columns["数据更新要求"]),
             }
@@ -115,6 +123,7 @@ def _read_order_rows(excel_path, service_dir):
             source_rows=tuple(grouped[key]["source_rows"]),
             source_tables=grouped[key]["source_tables"],
             target_user=grouped[key]["target_user"],
+            database_type=grouped[key]["database_type"],
             update_cycle=grouped[key]["update_cycle"],
             update_requirement=grouped[key]["update_requirement"],
         )
@@ -163,6 +172,63 @@ def extract_embedded_workbooks_by_work_order(excel_path, work_orders, attachment
     return workbooks
 
 
+def _extract_images_via_cellimages(excel_path):
+    result = {}
+    with zipfile.ZipFile(excel_path, "r") as archive:
+        if "xl/cellimages.xml" not in archive.namelist():
+            return result
+        cell_images = archive.read("xl/cellimages.xml").decode("utf-8")
+        name_to_rid = {}
+        for block in re.findall(r"<etc:cellImage>(.*?)</etc:cellImage>", cell_images, re.DOTALL):
+            name_match = re.search(r'name="([^"]+)"', block)
+            rid_match = re.search(r'r:embed="(rId\d+)"', block)
+            if name_match and rid_match:
+                name_to_rid[name_match.group(1)] = rid_match.group(1)
+        relationships_path = "xl/_rels/cellimages.xml.rels"
+        if relationships_path not in archive.namelist():
+            return result
+        relationships = archive.read(relationships_path).decode("utf-8")
+        rid_to_file = {}
+        for match in re.finditer(r'<Relationship[^>]*Id="(rId\d+)"[^>]*Target="([^"]+)"', relationships):
+            target = match.group(2)
+            if target.startswith("../"):
+                target = "xl/" + target[3:]
+            elif target.startswith("xl/"):
+                target = target
+            else:
+                target = "xl/" + target.lstrip("/")
+            rid_to_file[match.group(1)] = target
+        for name, rid in name_to_rid.items():
+            target = rid_to_file.get(rid)
+            if target:
+                result[name] = archive.read(target)
+    return result
+
+
+def _target_volume_images_by_row(workbook_path):
+    images_by_name = _extract_images_via_cellimages(workbook_path)
+    if not images_by_name:
+        return {}
+    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=False)
+    if len(workbook.worksheets) < 2:
+        workbook.close()
+        return {}
+    sheet = workbook.worksheets[1]
+    headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
+    if "目标表数据量" not in headers:
+        workbook.close()
+        return {}
+    column = headers.index("目标表数据量") + 1
+    matched = {}
+    for row in range(2, sheet.max_row + 1):
+        value = str(sheet.cell(row, column).value or "")
+        match = re.search(r'DISPIMG\("([^"]+)"', value)
+        if match and match.group(1) in images_by_name:
+            matched[row] = images_by_name[match.group(1)]
+    workbook.close()
+    return matched
+
+
 def parse_landing_tasks(workbook_path):
     workbook = openpyxl.load_workbook(workbook_path, data_only=True, read_only=True)
     sheet = workbook.worksheets[0]
@@ -172,12 +238,21 @@ def parse_landing_tasks(workbook_path):
         workbook.close()
         raise ValueError(f"附件缺少必要列: {', '.join(missing)}")
     columns = {header: headers.index(header) + 1 for header in REQUIRED_TASK_HEADERS}
+    landing_data_column = headers.index("落地数据量") + 1 if "落地数据量" in headers else None
+    dispatch_column = (
+        headers.index("下发任务简单说明（50字以内）") + 1
+        if "下发任务简单说明（50字以内）" in headers
+        else None
+    )
+    target_images = _target_volume_images_by_row(workbook_path)
 
     tasks = []
     for row in range(2, sheet.max_row + 1):
         landing_database = str(sheet.cell(row, columns["落地库名"]).value or "").strip()
         landing_table = str(sheet.cell(row, columns["落地表名"]).value or "").strip()
         business_scene = str(sheet.cell(row, columns["表中文名称"]).value or "").strip()
+        landing_data_count = str(sheet.cell(row, landing_data_column).value or "").strip() if landing_data_column else ""
+        dispatch_description = str(sheet.cell(row, dispatch_column).value or "").strip() if dispatch_column else ""
         if not any((landing_database, landing_table, business_scene)):
             continue
         tasks.append(
@@ -185,6 +260,9 @@ def parse_landing_tasks(workbook_path):
                 landing_database=landing_database,
                 landing_table=landing_table,
                 business_scene=business_scene,
+                landing_data_count=landing_data_count,
+                dispatch_description=dispatch_description,
+                target_volume_image=target_images.get(row),
             )
         )
     workbook.close()

@@ -65,6 +65,16 @@ SPECS = {
         module="materials.n07.table_landing_requirement",
         function="build_table_landing_requirement_document",
     ),
+    "02-库表落地方式_数据模型设计": MaterialSpec(
+        default_filename="02-数据模型设计.doc",
+        module="materials.n07.table_landing_design",
+        function="build_table_landing_design_document",
+    ),
+    "02-数据模型设计": MaterialSpec(
+        default_filename="02-数据模型设计.doc",
+        module="materials.n07.table_landing_design",
+        function="build_table_landing_design_document",
+    ),
 }
 
 

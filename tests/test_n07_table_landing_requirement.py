@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,10 @@ from docx import Document
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 FILL_SCRIPT = SCRIPTS / "fill_document.py"
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lvE1"
+    "8wAAAABJRU5ErkJggg=="
+)
 
 
 def load_fill_document_module():
@@ -22,17 +27,78 @@ def load_fill_document_module():
     return module
 
 
+def add_wps_cellimages(path, image_names):
+    with zipfile.ZipFile(path, "r") as source:
+        entries = {name: source.read(name) for name in source.namelist()}
+
+    cell_images = [
+        (
+            f'<etc:cellImage><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="{index}" '
+            f'name="{name}"/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId{index}"/>'
+            f"</xdr:blipFill></xdr:pic></etc:cellImage>"
+        )
+        for index, name in enumerate(image_names, start=1)
+    ]
+    entries["xl/cellimages.xml"] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<etc:cellImages xmlns:etc="http://www.wps.cn/officeDocument/2017/etCustomData" '
+        'xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + "".join(cell_images)
+        + "</etc:cellImages>"
+    ).encode("utf-8")
+    rels = [
+        (
+            f'<Relationship Id="rId{index}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+            f'Target="media/{name}.png"/>'
+        )
+        for index, name in enumerate(image_names, start=1)
+    ]
+    entries["xl/_rels/cellimages.xml.rels"] = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(rels)
+        + "</Relationships>"
+    ).encode("utf-8")
+    for name in image_names:
+        entries[f"xl/media/{name}.png"] = PNG_BYTES
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as target:
+        for name, data in entries.items():
+            target.writestr(name, data)
+
+
 def make_attachment_bytes(rows):
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "上线记录库表落地"
-    sheet.append(["工单号", "落地库名", "落地表名", "表中文名称"])
-    for row in rows:
-        sheet.append(row)
+    sheet.append(
+        [
+            "工单号",
+            "落地库名",
+            "落地表名",
+            "表中文名称",
+            "落地数据量",
+            "落地表简单说明（50字以内）",
+            "下发任务简单说明（50字以内）",
+        ]
+    )
+    evidence = workbook.create_sheet("佐证截图")
+    evidence.append(["任务名", "目标表数据量"])
+    image_names = []
+    for index, row in enumerate(rows, start=1):
+        padded = list(row) + [""] * (7 - len(row))
+        sheet.append(padded[:7])
+        image_name = f"TARGET_IMAGE_{index}"
+        image_names.append(image_name)
+        evidence.append([padded[2], f'=_xlfn.DISPIMG("{image_name}",1)'])
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp_file:
         path = Path(temp_file.name)
     try:
         workbook.save(path)
+        add_wps_cellimages(path, image_names)
         return path.read_bytes()
     finally:
         path.unlink(missing_ok=True)
@@ -99,6 +165,7 @@ def make_table_landing_ledger(path):
             "数据更新要求",
             "自测报告附件",
             "下发前置机中文名",
+            "下发前置机数据库类型",
         ]
     )
     sheet.append(
@@ -114,6 +181,7 @@ def make_table_landing_ledger(path):
             "每日凌晨",
             None,
             "前置机A",
+            "MySQL",
         ]
     )
     sheet.append(
@@ -129,21 +197,24 @@ def make_table_landing_ledger(path):
             "每月15日",
             None,
             "前置机B",
+            "Oracle",
         ]
     )
-    sheet.append([None, None, None, None, None, None, "PRE_SRC_TWO_B", None, None, None, None])
-    for column in "ABCDEFHIJK":
+    sheet.append([None, None, None, None, None, None, "PRE_SRC_TWO_B", None, None, None, None, None])
+    for column in "ABCDEFHIJKL":
         sheet.merge_cells(f"{column}3:{column}4")
     workbook.save(path)
 
     inject_workbook_embeddings(
         path,
         [
-            make_attachment_bytes([["WO-1", "DB_ONE", "TABLE_ONE", "业务一"]]),
+            make_attachment_bytes(
+                [["WO-1", "DB_ONE", "TABLE_ONE", "业务一", "10", "落地表一说明", "调度一说明"]]
+            ),
             make_attachment_bytes(
                 [
-                    ["WO-2", "DB_TWO", "TABLE_TWO", "业务二"],
-                    ["WO-2", "DB_THREE", "TABLE_THREE", "业务三"],
+                    ["WO-2", "DB_TWO", "TABLE_TWO", "业务二", "20", "落地表二说明", "调度二说明"],
+                    ["WO-2", "DB_THREE", "TABLE_THREE", "业务三", "30", "落地表三说明", "调度三说明"],
                 ]
             ),
         ],
@@ -180,6 +251,42 @@ def make_requirement_template(path):
     return path
 
 
+def make_design_template(path):
+    document = Document()
+    document.add_heading("数据模型设计", level=1)
+    document.add_heading("业务逻辑说明", level=1)
+    logic_table = document.add_table(rows=2, cols=6)
+    for index, value in enumerate(["序号", "目标库", "目标库类型", "目标表", "频率", "规格（记录数）"]):
+        logic_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_DB", "OLD_TYPE", "OLD_TABLE", "旧频率", "0"]):
+        logic_table.rows[1].cells[index].text = value
+    document.add_paragraph("OLD_TABLE：")
+    image_path = Path(path).with_suffix(".png")
+    image_path.write_bytes(PNG_BYTES)
+    document.add_paragraph().add_run().add_picture(str(image_path))
+    image_path.unlink(missing_ok=True)
+
+    document.add_heading("库表说明", level=1)
+    detail_table = document.add_table(rows=2, cols=6)
+    for index, value in enumerate(["序号", "落地库", "落地表", "对象用户", "库表来源", "业务场景"]):
+        detail_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_DB", "OLD_TABLE", "旧前置机", "OLD_SRC", "旧场景"]):
+        detail_table.rows[1].cells[index].text = value
+
+    document.add_heading("推送方式", level=1)
+    document.add_paragraph("固定说明保留")
+    document.add_paragraph("推送频率")
+    push_table = document.add_table(rows=2, cols=4)
+    for index, value in enumerate(["序号", "调度名", "调度中文名", "推送频率"]):
+        push_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_JOB", "旧调度", "旧频率"]):
+        push_table.rows[1].cells[index].text = value
+    document.add_paragraph("验证方式")
+    document.add_paragraph("固定验证说明保留")
+    document.save(path)
+    return path
+
+
 class N07TableLandingRequirementTest(unittest.TestCase):
     def test_registration_uses_public_requirement_filename(self):
         module = load_fill_document_module()
@@ -202,10 +309,14 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual(orders[1].source_rows, (3, 4))
         self.assertEqual(orders[1].program_count, 2)
         self.assertEqual(orders[1].source_tables, ["PRE_SRC_TWO_A", "PRE_SRC_TWO_B"])
+        self.assertEqual(orders[1].database_type, "Oracle")
         self.assertEqual(
             [(task.landing_database, task.landing_table, task.business_scene) for task in orders[1].tasks],
             [("DB_TWO", "TABLE_TWO", "业务二"), ("DB_THREE", "TABLE_THREE", "业务三")],
         )
+        self.assertEqual([task.landing_data_count for task in orders[1].tasks], ["20", "30"])
+        self.assertEqual([task.dispatch_description for task in orders[1].tasks], ["调度二说明", "调度三说明"])
+        self.assertEqual([task.target_volume_image for task in orders[1].tasks], [PNG_BYTES, PNG_BYTES])
 
     def test_build_table_landing_requirement_document_replaces_business_and_detail_sections(self):
         if str(SCRIPTS) not in sys.path:
@@ -245,6 +356,52 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual(first_detail[1], ["1", "DB_ONE", "TABLE_ONE", "前置机A", "PRE_SRC_ONE", "业务一"])
         self.assertEqual(second_detail[1], ["1", "DB_TWO", "TABLE_TWO", "前置机B", "PRE_SRC_TWO_A", "业务二"])
         self.assertEqual(second_detail[2], ["2", "DB_THREE", "TABLE_THREE", "前置机B", "PRE_SRC_TWO_B", "业务三"])
+
+    def test_registration_uses_public_design_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "02-库表落地方式_数据模型设计")
+
+        self.assertEqual(Path(output).name, "02-数据模型设计.doc")
+
+    def test_build_table_landing_design_document_replaces_tables_and_volume_images(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing_design import build_table_landing_design_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_table_landing_ledger(temp / "ledger.xlsx")
+            template = make_design_template(temp / "template.docx")
+            output = temp / "out.docx"
+
+            result = build_table_landing_design_document(
+                excel_path=str(ledger),
+                service_dir="N07-库表落地方式",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            document = Document(result)
+
+        paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        self.assertIn("目标表名：TABLE_ONE", paragraphs)
+        self.assertIn("目标表名：TABLE_TWO", paragraphs)
+        self.assertIn("目标表名：TABLE_THREE", paragraphs)
+        self.assertIn("固定说明保留", paragraphs)
+        self.assertIn("固定验证说明保留", paragraphs)
+        self.assertNotIn("OLD_TABLE：", paragraphs)
+
+        logic_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[0].rows]
+        detail_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[1].rows]
+        push_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[2].rows]
+
+        self.assertEqual(logic_rows[1], ["1", "DB_ONE", "MySQL", "TABLE_ONE", "每日", "10"])
+        self.assertEqual(logic_rows[2], ["2", "DB_TWO", "Oracle", "TABLE_TWO", "每月", "20"])
+        self.assertEqual(logic_rows[3], ["3", "DB_THREE", "Oracle", "TABLE_THREE", "每月", "30"])
+        self.assertEqual(detail_rows[2], ["2", "DB_TWO", "TABLE_TWO", "前置机B", "PRE_SRC_TWO_A", "业务二"])
+        self.assertEqual(push_rows[3], ["3", "PRE_SRC_TWO_B", "调度三说明", "每月"])
+        self.assertEqual(len(document.inline_shapes), 3)
 
 
 if __name__ == "__main__":
