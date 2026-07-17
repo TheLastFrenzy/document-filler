@@ -85,6 +85,26 @@ SPECS = {
         module="materials.n07.table_landing_test_report",
         function="build_table_landing_test_report_document",
     ),
+    "05-库表落地方式_作业上线记录": MaterialSpec(
+        default_filename="05-作业上线记录.doc",
+        module="materials.n07.table_landing_launch_record",
+        function="build_table_landing_launch_record_document",
+    ),
+    "05-作业上线记录": MaterialSpec(
+        default_filename="05-作业上线记录.doc",
+        module="materials.n07.table_landing_launch_record",
+        function="build_table_landing_launch_record_document",
+    ),
+    "06-库表落地方式_共享记录": MaterialSpec(
+        default_filename="06-共享记录.doc",
+        module="materials.n07.table_landing_share_record",
+        function="build_table_landing_share_record_document",
+    ),
+    "06-共享记录": MaterialSpec(
+        default_filename="06-共享记录.doc",
+        module="materials.n07.table_landing_share_record",
+        function="build_table_landing_share_record_document",
+    ),
 }
 
 

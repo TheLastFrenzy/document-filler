@@ -42,8 +42,10 @@ class TableLandingTask:
     landing_table: str
     business_scene: str
     source_table: str = ""
+    launch_time: str = ""
     landing_data_count: str = ""
     dispatch_description: str = ""
+    source_volume_image: bytes | None = None
     target_volume_image: bytes | None = None
 
 
@@ -60,6 +62,7 @@ class TableLandingWorkOrder:
     database_type: str
     update_cycle: str
     update_requirement: str
+    dispatch_descriptions: list[str] = field(default_factory=list)
     attachment_path: Path | None = None
     tasks: list[TableLandingTask] = field(default_factory=list)
 
@@ -82,6 +85,11 @@ def _read_order_rows(excel_path, service_dir):
 
     columns = {header: headers.index(header) + 1 for header in REQUIRED_TABLE_LANDING_HEADERS}
     database_type_column = headers.index("下发前置机数据库类型") + 1 if "下发前置机数据库类型" in headers else None
+    dispatch_description_column = (
+        headers.index("下发任务简单说明（50字以内）") + 1
+        if "下发任务简单说明（50字以内）" in headers
+        else None
+    )
     get = merged_value_getter(sheet)
     grouped = {}
     order_keys = []
@@ -104,6 +112,7 @@ def _read_order_rows(excel_path, service_dir):
                 "database_type": get(row, database_type_column) if database_type_column else "",
                 "update_cycle": get(row, columns["数据统计分析执行周期"]),
                 "update_requirement": get(row, columns["数据更新要求"]),
+                "dispatch_descriptions": [],
             }
             order_keys.append(work_order_no)
         group = grouped[work_order_no]
@@ -111,6 +120,9 @@ def _read_order_rows(excel_path, service_dir):
         source_table = get(row, columns["结果表清单"])
         if source_table:
             group["source_tables"].append(source_table)
+            group["dispatch_descriptions"].append(
+                get(row, dispatch_description_column) if dispatch_description_column else ""
+            )
     workbook.close()
 
     if not grouped:
@@ -129,6 +141,7 @@ def _read_order_rows(excel_path, service_dir):
             database_type=grouped[key]["database_type"],
             update_cycle=grouped[key]["update_cycle"],
             update_requirement=grouped[key]["update_requirement"],
+            dispatch_descriptions=grouped[key]["dispatch_descriptions"],
         )
         for key in order_keys
     ]
@@ -242,6 +255,7 @@ def _evidence_rows_by_row(workbook_path):
         "landing_database": _header_index(headers, ("落地库名",)),
         "landing_table": _header_index(headers, ("落地表名",)),
         "business_scene": _header_index(headers, ("表中文名", "表中文名称")),
+        "source_volume_image": _header_index(headers, ("源表数据量",)),
         "target_volume_image": _header_index(headers, ("目标表数据量",)),
     }
     rows = {}
@@ -252,6 +266,10 @@ def _evidence_rows_by_row(workbook_path):
             "landing_database": _cell_text(sheet, row, columns["landing_database"]),
             "landing_table": _cell_text(sheet, row, columns["landing_table"]),
             "business_scene": _cell_text(sheet, row, columns["business_scene"]),
+            "source_volume_image": _dispimg_image(
+                _cell_text(sheet, row, columns["source_volume_image"]),
+                images_by_name,
+            ),
             "target_volume_image": _dispimg_image(
                 _cell_text(sheet, row, columns["target_volume_image"]),
                 images_by_name,
@@ -333,6 +351,7 @@ def parse_landing_tasks(workbook_path, source_tables=None):
         raise ValueError(f"附件缺少必要列: {', '.join(missing)}")
     columns = {header: headers.index(header) + 1 for header in REQUIRED_TASK_HEADERS}
     landing_data_column = headers.index("落地数据量") + 1 if "落地数据量" in headers else None
+    launch_time_column = headers.index("上线时间") + 1 if "上线时间" in headers else None
     dispatch_column = (
         headers.index("下发任务简单说明（50字以内）") + 1
         if "下发任务简单说明（50字以内）" in headers
@@ -348,6 +367,7 @@ def parse_landing_tasks(workbook_path, source_tables=None):
         landing_table = _cell_text(sheet, row, columns["落地表名"]) or evidence.get("landing_table", "")
         business_scene = _cell_text(sheet, row, columns["表中文名称"]) or evidence.get("business_scene", "")
         landing_data_count = _cell_text(sheet, row, landing_data_column) if landing_data_column else ""
+        launch_time = _cell_text(sheet, row, launch_time_column) if launch_time_column else ""
         dispatch_description = (
             _cell_text(sheet, row, dispatch_column) if dispatch_column else ""
         ) or evidence.get("dispatch_description", "")
@@ -360,8 +380,10 @@ def parse_landing_tasks(workbook_path, source_tables=None):
                 landing_table=landing_table,
                 business_scene=business_scene,
                 source_table=source_table,
+                launch_time=launch_time,
                 landing_data_count=landing_data_count,
                 dispatch_description=dispatch_description,
+                source_volume_image=evidence.get("source_volume_image"),
                 target_volume_image=evidence.get("target_volume_image"),
             )
         )

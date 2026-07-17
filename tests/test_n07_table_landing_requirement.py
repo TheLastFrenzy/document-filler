@@ -82,19 +82,31 @@ def make_attachment_bytes(rows):
             "表中文名称",
             "落地数据量",
             "落地表简单说明（50字以内）",
+            "上线时间",
             "下发任务简单说明（50字以内）",
         ]
     )
     evidence = workbook.create_sheet("佐证截图")
-    evidence.append(["任务名", "任务中文名", "落地库名", "落地表名", "表中文名", "目标表数据量"])
+    evidence.append(["任务名", "任务中文名", "落地库名", "落地表名", "表中文名", "源表数据量", "目标表数据量"])
     image_names = []
     for index, row in enumerate(rows, start=1):
-        padded = list(row) + [""] * (8 - len(row))
-        sheet.append(padded[:7])
-        image_name = f"TARGET_IMAGE_{index}"
-        image_names.append(image_name)
-        source_table = padded[7] or padded[2]
-        evidence.append([source_table, padded[6], padded[1], padded[2], padded[3], f'=_xlfn.DISPIMG("{image_name}",1)'])
+        padded = list(row) + [""] * (9 - len(row))
+        sheet.append(padded[:8])
+        source_image_name = f"SOURCE_IMAGE_{index}"
+        target_image_name = f"TARGET_IMAGE_{index}"
+        image_names.extend([source_image_name, target_image_name])
+        source_table = padded[8] or padded[2]
+        evidence.append(
+            [
+                source_table,
+                padded[7],
+                padded[1],
+                padded[2],
+                padded[3],
+                f'=_xlfn.DISPIMG("{source_image_name}",1)',
+                f'=_xlfn.DISPIMG("{target_image_name}",1)',
+            ]
+        )
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp_file:
         path = Path(temp_file.name)
     try:
@@ -233,12 +245,44 @@ def make_table_landing_ledger(path):
         path,
         [
             make_attachment_bytes(
-                [["WO-1", "DB_ONE", "TABLE_ONE", "业务一", "10", "落地表一说明", "调度一说明", "PRE_SRC_ONE"]]
+                [
+                    [
+                        "WO-1",
+                        "DB_ONE",
+                        "TABLE_ONE",
+                        "业务一",
+                        "10",
+                        "落地表一说明",
+                        "2025-01-02 09:00:00",
+                        "调度一说明",
+                        "PRE_SRC_ONE",
+                    ]
+                ]
             ),
             make_attachment_bytes(
                 [
-                    ["WO-2", "DB_THREE", "TABLE_THREE", "业务三", "30", "落地表三说明", "调度三说明", "PRE_SRC_TWO_B"],
-                    ["WO-2", "DB_TWO", "TABLE_TWO", "业务二", "20", "落地表二说明", "调度二说明", "PRE_SRC_TWO_A"],
+                    [
+                        "WO-2",
+                        "DB_THREE",
+                        "TABLE_THREE",
+                        "业务三",
+                        "30",
+                        "落地表三说明",
+                        "2025-03-04 11:00:00",
+                        "调度三说明",
+                        "PRE_SRC_TWO_B",
+                    ],
+                    [
+                        "WO-2",
+                        "DB_TWO",
+                        "TABLE_TWO",
+                        "业务二",
+                        "20",
+                        "落地表二说明",
+                        "2025-02-03 10:00:00",
+                        "调度二说明",
+                        "PRE_SRC_TWO_A",
+                    ],
                 ]
             ),
         ],
@@ -351,6 +395,45 @@ def make_test_report_template(path):
     return path
 
 
+def make_launch_record_template(path):
+    document = Document()
+    document.add_heading("作业上线记录", level=1)
+    document.add_heading("库表落地上线清单", level=1)
+    launch_table = document.add_table(rows=2, cols=5)
+    for index, value in enumerate(["序号", "调度名", "上线时间", "更新频率", "场景名称"]):
+        launch_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_JOB", "旧上线时间", "旧频率", "旧场景"]):
+        launch_table.rows[1].cells[index].text = value
+    document.add_heading("库表落地上线记录", level=1)
+    document.add_paragraph("固定上线说明保留")
+    document.save(path)
+    return path
+
+
+def make_share_record_template(path):
+    document = Document()
+    document.add_heading("共享记录", level=1)
+    document.add_heading("数据库表落地验证清单", level=1)
+    list_table = document.add_table(rows=2, cols=4)
+    for index, value in enumerate(["序号", "调度名", "调度中文名", "场景名称"]):
+        list_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_JOB", "旧调度中文名", "旧场景"]):
+        list_table.rows[1].cells[index].text = value
+
+    document.add_heading("数据库表落地验证记录", level=1)
+    document.add_heading("OLD_JOB", level=2)
+    document.add_paragraph("期望记录条数：旧期望")
+    image_path = Path(path).with_suffix(".png")
+    image_path.write_bytes(PNG_BYTES)
+    document.add_paragraph().add_run().add_picture(str(image_path))
+    document.add_paragraph("验证记录条数：旧验证")
+    document.add_paragraph().add_run().add_picture(str(image_path))
+    image_path.unlink(missing_ok=True)
+    document.add_paragraph("验证结果：旧结果")
+    document.save(path)
+    return path
+
+
 class N07TableLandingRequirementTest(unittest.TestCase):
     def test_registration_uses_public_requirement_filename(self):
         module = load_fill_document_module()
@@ -380,6 +463,8 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         )
         self.assertEqual([task.landing_data_count for task in orders[1].tasks], ["20", "30"])
         self.assertEqual([task.dispatch_description for task in orders[1].tasks], ["调度二说明", "调度三说明"])
+        self.assertEqual([task.launch_time for task in orders[1].tasks], ["2025-02-03 10:00:00", "2025-03-04 11:00:00"])
+        self.assertEqual([task.source_volume_image for task in orders[1].tasks], [PNG_BYTES, PNG_BYTES])
         self.assertEqual([task.target_volume_image for task in orders[1].tasks], [PNG_BYTES, PNG_BYTES])
 
     def test_build_table_landing_requirement_document_replaces_business_and_detail_sections(self):
@@ -546,6 +631,84 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual(items[0].business_scene, "业务一")
         self.assertEqual(items[1].dispatch_description, "PRE_SRC_TWO_A")
         self.assertEqual(items[1].business_scene, "PRE_SRC_TWO_A")
+
+    def test_registration_uses_public_launch_record_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "05-库表落地方式_作业上线记录")
+
+        self.assertEqual(Path(output).name, "05-作业上线记录.doc")
+
+    def test_build_table_landing_launch_record_document_replaces_launch_table(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing_launch_record import build_table_landing_launch_record_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_table_landing_ledger(temp / "ledger.xlsx")
+            template = make_launch_record_template(temp / "template.docx")
+            output = temp / "out.docx"
+
+            result = build_table_landing_launch_record_document(
+                excel_path=str(ledger),
+                service_dir="N07-库表落地方式",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            document = Document(result)
+
+        paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        self.assertIn("固定上线说明保留", paragraphs)
+        self.assertNotIn("OLD_JOB", paragraphs)
+
+        launch_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[0].rows]
+        self.assertEqual(launch_rows[1], ["1", "PRE_SRC_ONE", "2025-01-02 09:00:00", "每日", "业务一"])
+        self.assertEqual(launch_rows[2], ["2", "PRE_SRC_TWO_A", "2025-02-03 10:00:00", "每月", "业务二"])
+        self.assertEqual(launch_rows[3], ["3", "PRE_SRC_TWO_B", "2025-03-04 11:00:00", "每月", "业务三"])
+
+    def test_registration_uses_public_share_record_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "06-库表落地方式_共享记录")
+
+        self.assertEqual(Path(output).name, "06-共享记录.doc")
+
+    def test_build_table_landing_share_record_document_replaces_list_and_record_sections(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing_share_record import build_table_landing_share_record_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_table_landing_ledger(temp / "ledger.xlsx")
+            template = make_share_record_template(temp / "template.docx")
+            output = temp / "out.docx"
+
+            result = build_table_landing_share_record_document(
+                excel_path=str(ledger),
+                service_dir="N07-库表落地方式",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            document = Document(result)
+
+        paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        self.assertIn("PRE_SRC_ONE", paragraphs)
+        self.assertIn("PRE_SRC_TWO_A", paragraphs)
+        self.assertIn("PRE_SRC_TWO_B", paragraphs)
+        self.assertIn("期望记录条数：20", paragraphs)
+        self.assertIn("验证记录条数：30", paragraphs)
+        self.assertIn("验证结果：期望记录条数与验证记录条数一致，验证通过；", paragraphs)
+        self.assertNotIn("OLD_JOB", paragraphs)
+
+        list_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[0].rows]
+        self.assertEqual(list_rows[1], ["1", "PRE_SRC_ONE", "调度一说明", "业务一"])
+        self.assertEqual(list_rows[2], ["2", "PRE_SRC_TWO_A", "调度二说明", "业务二"])
+        self.assertEqual(list_rows[3], ["3", "PRE_SRC_TWO_B", "调度三说明", "业务三"])
+        self.assertEqual(len(document.inline_shapes), 6)
 
 
 if __name__ == "__main__":
