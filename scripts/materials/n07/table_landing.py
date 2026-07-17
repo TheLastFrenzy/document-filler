@@ -33,12 +33,15 @@ REQUIRED_TASK_HEADERS = (
     "表中文名称",
 )
 
+EVIDENCE_TASK_NAME_HEADERS = ("任务名", "调度名", "结果表清单")
+
 
 @dataclass
 class TableLandingTask:
     landing_database: str
     landing_table: str
     business_scene: str
+    source_table: str = ""
     landing_data_count: str = ""
     dispatch_description: str = ""
     target_volume_image: bytes | None = None
@@ -205,31 +208,122 @@ def _extract_images_via_cellimages(excel_path):
     return result
 
 
-def _target_volume_images_by_row(workbook_path):
+def _header_index(headers, candidates):
+    for candidate in candidates:
+        if candidate in headers:
+            return headers.index(candidate) + 1
+    return None
+
+
+def _cell_text(sheet, row, column):
+    if not column or row > sheet.max_row:
+        return ""
+    return str(sheet.cell(row, column).value or "").strip()
+
+
+def _dispimg_image(value, images_by_name):
+    match = re.search(r'DISPIMG\("([^"]+)"', str(value or ""))
+    if match and match.group(1) in images_by_name:
+        return images_by_name[match.group(1)]
+    return None
+
+
+def _evidence_rows_by_row(workbook_path):
     images_by_name = _extract_images_via_cellimages(workbook_path)
-    if not images_by_name:
-        return {}
     workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=False)
     if len(workbook.worksheets) < 2:
         workbook.close()
         return {}
     sheet = workbook.worksheets[1]
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
-    if "目标表数据量" not in headers:
-        workbook.close()
-        return {}
-    column = headers.index("目标表数据量") + 1
-    matched = {}
+    columns = {
+        "source_table": _header_index(headers, EVIDENCE_TASK_NAME_HEADERS),
+        "dispatch_description": _header_index(headers, ("任务中文名", "下发任务简单说明（50字以内）")),
+        "landing_database": _header_index(headers, ("落地库名",)),
+        "landing_table": _header_index(headers, ("落地表名",)),
+        "business_scene": _header_index(headers, ("表中文名", "表中文名称")),
+        "target_volume_image": _header_index(headers, ("目标表数据量",)),
+    }
+    rows = {}
     for row in range(2, sheet.max_row + 1):
-        value = str(sheet.cell(row, column).value or "")
-        match = re.search(r'DISPIMG\("([^"]+)"', value)
-        if match and match.group(1) in images_by_name:
-            matched[row] = images_by_name[match.group(1)]
+        info = {
+            "source_table": _cell_text(sheet, row, columns["source_table"]),
+            "dispatch_description": _cell_text(sheet, row, columns["dispatch_description"]),
+            "landing_database": _cell_text(sheet, row, columns["landing_database"]),
+            "landing_table": _cell_text(sheet, row, columns["landing_table"]),
+            "business_scene": _cell_text(sheet, row, columns["business_scene"]),
+            "target_volume_image": _dispimg_image(
+                _cell_text(sheet, row, columns["target_volume_image"]),
+                images_by_name,
+            ),
+        }
+        if any(value for value in info.values() if not isinstance(value, bytes)):
+            rows[row] = info
+    workbook.close()
+    return rows
+
+
+def _target_volume_images_by_row(workbook_path):
+    return {
+        row: info["target_volume_image"]
+        for row, info in _evidence_rows_by_row(workbook_path).items()
+        if info.get("target_volume_image")
+    }
+
+
+def _source_key(value):
+    return re.sub(r"\s+", "", str(value or "")).strip().upper()
+
+
+def _order_tasks_by_source_tables(tasks, source_tables):
+    if not source_tables or not any(task.source_table for task in tasks):
+        return tasks
+
+    by_source = {}
+    for task in tasks:
+        key = _source_key(task.source_table)
+        if key:
+            by_source.setdefault(key, []).append(task)
+
+    ordered = []
+    missing = []
+    for source_table in source_tables:
+        matches = by_source.get(_source_key(source_table)) or []
+        if matches:
+            ordered.append(matches.pop(0))
+        else:
+            missing.append(source_table)
+    if missing:
+        raise ValueError(f"附件第二个sheet未匹配到台账结果表清单: {', '.join(missing)}")
+    return ordered
+
+
+def extract_ledger_images_by_row(excel_path, row_numbers, image_columns):
+    images_by_name = _extract_images_via_cellimages(excel_path)
+    if not images_by_name:
+        return {}
+
+    workbook = openpyxl.load_workbook(excel_path, read_only=True, data_only=False)
+    sheet = workbook.active
+    headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
+    missing = [column for column in image_columns if column not in headers]
+    if missing:
+        workbook.close()
+        raise ValueError(f"台账缺少必要列: {', '.join(missing)}")
+
+    columns = {header: headers.index(header) + 1 for header in image_columns}
+    matched = {}
+    for row in row_numbers:
+        for header, column in columns.items():
+            value = str(sheet.cell(row, column).value or "")
+            match = re.search(r'DISPIMG\("([^"]+)"', value)
+            if match and match.group(1) in images_by_name:
+                matched[(row, header)] = images_by_name[match.group(1)]
     workbook.close()
     return matched
 
 
-def parse_landing_tasks(workbook_path):
+def parse_landing_tasks(workbook_path, source_tables=None):
     workbook = openpyxl.load_workbook(workbook_path, data_only=True, read_only=True)
     sheet = workbook.worksheets[0]
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
@@ -244,31 +338,37 @@ def parse_landing_tasks(workbook_path):
         if "下发任务简单说明（50字以内）" in headers
         else None
     )
-    target_images = _target_volume_images_by_row(workbook_path)
+    evidence_rows = _evidence_rows_by_row(workbook_path)
+    max_row = max([sheet.max_row, *evidence_rows.keys()]) if evidence_rows else sheet.max_row
 
     tasks = []
-    for row in range(2, sheet.max_row + 1):
-        landing_database = str(sheet.cell(row, columns["落地库名"]).value or "").strip()
-        landing_table = str(sheet.cell(row, columns["落地表名"]).value or "").strip()
-        business_scene = str(sheet.cell(row, columns["表中文名称"]).value or "").strip()
-        landing_data_count = str(sheet.cell(row, landing_data_column).value or "").strip() if landing_data_column else ""
-        dispatch_description = str(sheet.cell(row, dispatch_column).value or "").strip() if dispatch_column else ""
-        if not any((landing_database, landing_table, business_scene)):
+    for row in range(2, max_row + 1):
+        evidence = evidence_rows.get(row, {})
+        landing_database = _cell_text(sheet, row, columns["落地库名"]) or evidence.get("landing_database", "")
+        landing_table = _cell_text(sheet, row, columns["落地表名"]) or evidence.get("landing_table", "")
+        business_scene = _cell_text(sheet, row, columns["表中文名称"]) or evidence.get("business_scene", "")
+        landing_data_count = _cell_text(sheet, row, landing_data_column) if landing_data_column else ""
+        dispatch_description = (
+            _cell_text(sheet, row, dispatch_column) if dispatch_column else ""
+        ) or evidence.get("dispatch_description", "")
+        source_table = evidence.get("source_table", "")
+        if not any((landing_database, landing_table, business_scene, source_table)):
             continue
         tasks.append(
             TableLandingTask(
                 landing_database=landing_database,
                 landing_table=landing_table,
                 business_scene=business_scene,
+                source_table=source_table,
                 landing_data_count=landing_data_count,
                 dispatch_description=dispatch_description,
-                target_volume_image=target_images.get(row),
+                target_volume_image=evidence.get("target_volume_image"),
             )
         )
     workbook.close()
     if not tasks:
         raise ValueError(f"附件未解析到库表落地明细: {workbook_path}")
-    return tasks
+    return _order_tasks_by_source_tables(tasks, source_tables or [])
 
 
 def read_table_landing_work_orders(excel_path, service_dir):
@@ -282,5 +382,5 @@ def read_table_landing_work_orders(excel_path, service_dir):
         )
         for order in orders:
             order.attachment_path = workbooks[order.work_order_no]
-            order.tasks = parse_landing_tasks(order.attachment_path)
+            order.tasks = parse_landing_tasks(order.attachment_path, order.source_tables)
     return orders

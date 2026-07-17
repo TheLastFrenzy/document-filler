@@ -75,6 +75,16 @@ SPECS = {
         module="materials.n07.table_landing_design",
         function="build_table_landing_design_document",
     ),
+    "04-库表落地方式_测试报告": MaterialSpec(
+        default_filename="04- 测试报告（库表落地）.doc",
+        module="materials.n07.table_landing_test_report",
+        function="build_table_landing_test_report_document",
+    ),
+    "04- 测试报告（库表落地）": MaterialSpec(
+        default_filename="04- 测试报告（库表落地）.doc",
+        module="materials.n07.table_landing_test_report",
+        function="build_table_landing_test_report_document",
+    ),
 }
 
 

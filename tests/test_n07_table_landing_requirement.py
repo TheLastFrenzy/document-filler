@@ -86,14 +86,15 @@ def make_attachment_bytes(rows):
         ]
     )
     evidence = workbook.create_sheet("佐证截图")
-    evidence.append(["任务名", "目标表数据量"])
+    evidence.append(["任务名", "任务中文名", "落地库名", "落地表名", "表中文名", "目标表数据量"])
     image_names = []
     for index, row in enumerate(rows, start=1):
-        padded = list(row) + [""] * (7 - len(row))
+        padded = list(row) + [""] * (8 - len(row))
         sheet.append(padded[:7])
         image_name = f"TARGET_IMAGE_{index}"
         image_names.append(image_name)
-        evidence.append([padded[2], f'=_xlfn.DISPIMG("{image_name}",1)'])
+        source_table = padded[7] or padded[2]
+        evidence.append([source_table, padded[6], padded[1], padded[2], padded[3], f'=_xlfn.DISPIMG("{image_name}",1)'])
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp_file:
         path = Path(temp_file.name)
     try:
@@ -166,6 +167,8 @@ def make_table_landing_ledger(path):
             "自测报告附件",
             "下发前置机中文名",
             "下发前置机数据库类型",
+            "上线交付截图1",
+            "上线交付截图2",
         ]
     )
     sheet.append(
@@ -182,6 +185,8 @@ def make_table_landing_ledger(path):
             None,
             "前置机A",
             "MySQL",
+            '=DISPIMG("LAUNCH_ONE_A",1)',
+            '=DISPIMG("LAUNCH_ONE_B",1)',
         ]
     )
     sheet.append(
@@ -198,9 +203,28 @@ def make_table_landing_ledger(path):
             None,
             "前置机B",
             "Oracle",
+            '=DISPIMG("LAUNCH_TWO_A_1",1)',
+            '=DISPIMG("LAUNCH_TWO_A_2",1)',
         ]
     )
-    sheet.append([None, None, None, None, None, None, "PRE_SRC_TWO_B", None, None, None, None, None])
+    sheet.append(
+        [
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "PRE_SRC_TWO_B",
+            None,
+            None,
+            None,
+            None,
+            None,
+            '=DISPIMG("LAUNCH_TWO_B_1",1)',
+            '=DISPIMG("LAUNCH_TWO_B_2",1)',
+        ]
+    )
     for column in "ABCDEFHIJKL":
         sheet.merge_cells(f"{column}3:{column}4")
     workbook.save(path)
@@ -209,14 +233,25 @@ def make_table_landing_ledger(path):
         path,
         [
             make_attachment_bytes(
-                [["WO-1", "DB_ONE", "TABLE_ONE", "业务一", "10", "落地表一说明", "调度一说明"]]
+                [["WO-1", "DB_ONE", "TABLE_ONE", "业务一", "10", "落地表一说明", "调度一说明", "PRE_SRC_ONE"]]
             ),
             make_attachment_bytes(
                 [
-                    ["WO-2", "DB_TWO", "TABLE_TWO", "业务二", "20", "落地表二说明", "调度二说明"],
-                    ["WO-2", "DB_THREE", "TABLE_THREE", "业务三", "30", "落地表三说明", "调度三说明"],
+                    ["WO-2", "DB_THREE", "TABLE_THREE", "业务三", "30", "落地表三说明", "调度三说明", "PRE_SRC_TWO_B"],
+                    ["WO-2", "DB_TWO", "TABLE_TWO", "业务二", "20", "落地表二说明", "调度二说明", "PRE_SRC_TWO_A"],
                 ]
             ),
+        ],
+    )
+    add_wps_cellimages(
+        path,
+        [
+            "LAUNCH_ONE_A",
+            "LAUNCH_ONE_B",
+            "LAUNCH_TWO_A_1",
+            "LAUNCH_TWO_A_2",
+            "LAUNCH_TWO_B_1",
+            "LAUNCH_TWO_B_2",
         ],
     )
     return path
@@ -283,6 +318,35 @@ def make_design_template(path):
         push_table.rows[1].cells[index].text = value
     document.add_paragraph("验证方式")
     document.add_paragraph("固定验证说明保留")
+    document.save(path)
+    return path
+
+
+def make_test_report_template(path):
+    document = Document()
+    document.add_heading("测试报告", level=1)
+    document.add_heading("库表落地测试清单", level=1)
+    list_table = document.add_table(rows=2, cols=3)
+    for index, value in enumerate(["序号", "调度名", "调度中文名"]):
+        list_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_JOB", "旧调度说明"]):
+        list_table.rows[1].cells[index].text = value
+
+    document.add_heading("库表落地测试内容", level=1)
+    document.add_heading("OLD_JOB", level=2)
+    document.add_paragraph("OLD_JOB")
+    image_path = Path(path).with_suffix(".png")
+    image_path.write_bytes(PNG_BYTES)
+    document.add_paragraph().add_run().add_picture(str(image_path))
+    image_path.unlink(missing_ok=True)
+    document.add_paragraph("测试结论：旧结论")
+
+    document.add_heading("测试结论", level=1)
+    conclusion_table = document.add_table(rows=2, cols=6)
+    for index, value in enumerate(["序号", "测试调度清单", "业务场景", "测试方法", "测试工具", "测试结论"]):
+        conclusion_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "OLD_JOB", "旧场景", "旧方法", "旧工具", "旧结论"]):
+        conclusion_table.rows[1].cells[index].text = value
     document.save(path)
     return path
 
@@ -402,6 +466,86 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual(detail_rows[2], ["2", "DB_TWO", "TABLE_TWO", "前置机B", "PRE_SRC_TWO_A", "业务二"])
         self.assertEqual(push_rows[3], ["3", "PRE_SRC_TWO_B", "调度三说明", "每月"])
         self.assertEqual(len(document.inline_shapes), 3)
+
+    def test_registration_uses_public_test_report_filename(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = module.resolve_output_path(temp_dir, "04-库表落地方式_测试报告")
+
+        self.assertEqual(Path(output).name, "04- 测试报告（库表落地）.doc")
+
+    def test_build_table_landing_test_report_document_replaces_sections_and_launch_images(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing_test_report import build_table_landing_test_report_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_table_landing_ledger(temp / "ledger.xlsx")
+            template = make_test_report_template(temp / "template.docx")
+            output = temp / "out.docx"
+
+            result = build_table_landing_test_report_document(
+                excel_path=str(ledger),
+                service_dir="N07-库表落地方式",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            document = Document(result)
+
+        paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        self.assertIn("PRE_SRC_ONE", paragraphs)
+        self.assertIn("PRE_SRC_TWO_A", paragraphs)
+        self.assertIn("PRE_SRC_TWO_B", paragraphs)
+        self.assertIn("测试结论：测试结果与预期结果一致，测试通过。", paragraphs)
+        self.assertNotIn("OLD_JOB", paragraphs)
+
+        list_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[0].rows]
+        conclusion_rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[1].rows]
+        self.assertEqual(list_rows[1], ["1", "PRE_SRC_ONE", "调度一说明"])
+        self.assertEqual(list_rows[2], ["2", "PRE_SRC_TWO_A", "调度二说明"])
+        self.assertEqual(list_rows[3], ["3", "PRE_SRC_TWO_B", "调度三说明"])
+        self.assertEqual(conclusion_rows[1], ["1", "PRE_SRC_ONE", "业务一", "程序调度", "DACP", "通过"])
+        self.assertEqual(conclusion_rows[3], ["3", "PRE_SRC_TWO_B", "业务三", "程序调度", "DACP", "通过"])
+        self.assertEqual(len(document.inline_shapes), 6)
+
+    def test_table_landing_test_items_fall_back_when_attachment_task_is_missing(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing import TableLandingTask, TableLandingWorkOrder
+        from materials.n07.table_landing_test_report import _build_test_items
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = make_table_landing_ledger(Path(temp_dir) / "ledger.xlsx")
+            order = TableLandingWorkOrder(
+                demand_no="REQ-1",
+                work_order_no="WO-1",
+                title="工单一",
+                description="工单描述",
+                program_count=2,
+                source_rows=(2, 3),
+                source_tables=["PRE_SRC_ONE", "PRE_SRC_TWO_A"],
+                target_user="前置机",
+                database_type="MySQL",
+                update_cycle="每日",
+                update_requirement="每日凌晨",
+                tasks=[
+                    TableLandingTask(
+                        landing_database="DB_ONE",
+                        landing_table="TABLE_ONE",
+                        business_scene="业务一",
+                        dispatch_description="调度一说明",
+                    )
+                ],
+            )
+
+            items = _build_test_items(str(ledger), [order])
+
+        self.assertEqual(items[0].dispatch_description, "调度一说明")
+        self.assertEqual(items[0].business_scene, "业务一")
+        self.assertEqual(items[1].dispatch_description, "PRE_SRC_TWO_A")
+        self.assertEqual(items[1].business_scene, "PRE_SRC_TWO_A")
 
 
 if __name__ == "__main__":
