@@ -47,7 +47,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from materials.registry import get_material_spec, load_material_builder
+from materials.registry import get_material_spec, load_material_builder, registered_material_types
 
 HEADER_BG = "F1F1F1"
 
@@ -60,6 +60,20 @@ MATERIAL_OUTPUT_EXTENSIONS = {
     "03-数据统计分析_测试文档": ".docx",
     "04-数据统计分析_结果表及使用说明": ".xlsx",
 }
+
+LEGACY_MATERIAL_TYPES = (
+    "01-数据报表_需求文档",
+    "01-数据统计分析_需求文档",
+    "02-数据报表_设计文档",
+    "02-数据统计分析_设计文档",
+    "03-数据报表_上线记录",
+    "03-数据统计分析_测试文档",
+    "04-数据统计分析_结果表及使用说明",
+)
+
+
+def supported_material_types():
+    return registered_material_types() + LEGACY_MATERIAL_TYPES
 
 
 def resolve_output_path(output_path, material_type):
@@ -2017,7 +2031,7 @@ def _clean_logic_step(text):
     return text.strip(" \r\n\t；;。")
 
 
-def split_logic_description(text):
+def split_logic_description(text, limit=15):
     text = str(text or "").strip()
     if not text:
         return []
@@ -2045,7 +2059,7 @@ def split_logic_description(text):
             if _clean_logic_step(piece)
         ]
 
-    return steps[:15]
+    return steps if limit is None else steps[:limit]
 
 
 def build_stats_requirement_business_logic_steps(results, descriptions):
@@ -3541,7 +3555,10 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
         append_image_paragraph(doc, body, image_payload, "未匹配到数据处理流程图，请补充。")
 
         append_body_element(body, mp("数据加工逻辑", style["H3"]))
-        steps = split_logic_description(relation_map.get(result_en, {}).get("description", ""))
+        steps = split_logic_description(
+            relation_map.get(result_en, {}).get("description", ""),
+            limit=None,
+        )
         if not steps:
             steps = ["未匹配到数据加工逻辑说明，请手动补充。"]
         append_body_element(body, make_biz_table(
@@ -3667,7 +3684,8 @@ def fill_document(excel_path, service_dir, material_type, template_path, output_
         data_rows = read_excel(excel_path, service_dir)
         return fill_launch_record_doc(excel_path, data_rows, template_path, output_path)
     else:
-        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: 01-API接口开发_需求文档, 02-API接口开发_数据模型设计, 03-API接口开发_接口开发代码, 04-API接口开发_接口测试报告, 05-API接口开发_作业上线记录, 01-库表落地方式_需求文档, 02-库表落地方式_数据模型设计, 04-库表落地方式_测试报告, 05-库表落地方式_作业上线记录, 06-库表落地方式_共享记录, 01-数据报表_需求文档, 01-数据统计分析_需求文档, 02-数据报表_设计文档, 02-数据统计分析_设计文档, 03-数据报表_上线记录, 03-数据统计分析_测试文档, 04-数据统计分析_结果表及使用说明")
+        supported = ", ".join(supported_material_types())
+        raise ValueError(f"不支持的材料类型: {material_type}。当前支持: {supported}")
 
 
 # ══════════════════════════════════════════════════════════════

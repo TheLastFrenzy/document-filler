@@ -30,11 +30,12 @@ class SkillMetadataTest(unittest.TestCase):
         self.assertIn("Use $document-filler", content)
         self.assertNotIn("支持需求/设计文档", content)
 
-    def test_requirements_include_pdf_and_workbook_dependencies(self):
+    def test_requirements_include_runtime_dependencies_without_unused_pypdf(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
 
-        for package in ["openpyxl", "python-docx", "pymupdf", "reportlab", "pypdf"]:
+        for package in ["openpyxl", "python-docx", "olefile", "pillow", "pandas", "pymupdf", "reportlab"]:
             self.assertIn(package, requirements)
+        self.assertNotIn("pypdf", requirements)
 
 
 if __name__ == "__main__":

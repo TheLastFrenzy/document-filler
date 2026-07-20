@@ -212,6 +212,43 @@ def add_picture_paragraph(document, image_path: Path):
     return paragraph
 
 
+def set_table_layout(table, width, width_type, grid_widths, layout):
+    properties = table._tbl.tblPr
+    table_width = properties.find(qn("w:tblW"))
+    if table_width is None:
+        table_width = OxmlElement("w:tblW")
+        properties.append(table_width)
+    table_width.set(qn("w:w"), str(width))
+    table_width.set(qn("w:type"), width_type)
+
+    table_layout = properties.find(qn("w:tblLayout"))
+    if table_layout is None:
+        table_layout = OxmlElement("w:tblLayout")
+        properties.append(table_layout)
+    table_layout.set(qn("w:type"), layout)
+
+    grid = table._tbl.tblGrid
+    for column, column_width in zip(grid.gridCol_lst, grid_widths):
+        column.set(qn("w:w"), str(column_width))
+    for row in table.rows:
+        for cell, column_width in zip(row.cells, grid_widths):
+            cell._tc.tcPr.tcW.set(qn("w:w"), str(column_width))
+            cell._tc.tcPr.tcW.set(qn("w:type"), "dxa")
+
+
+def table_layout_signature(table):
+    properties = table._tbl.tblPr
+    table_width = properties.find(qn("w:tblW"))
+    layout = properties.find(qn("w:tblLayout"))
+    grid_widths = [int(column.get(qn("w:w"))) for column in table._tbl.tblGrid.gridCol_lst]
+    return (
+        table_width.get(qn("w:w")),
+        table_width.get(qn("w:type")),
+        layout.get(qn("w:type")),
+        sum(grid_widths),
+    )
+
+
 def make_self_report_with_code_images(path: Path):
     image_path = path.with_name("screenshot.png")
     image_path.write_bytes(PNG_1X1)
@@ -365,6 +402,7 @@ def make_api_test_report_template(path: Path):
         [["1", "old", "旧参数", "旧测试数据"]],
     )
     set_table_format(input_table, "D9D9D9")
+    set_table_layout(input_table, 3806, "pct", [959, 1417, 1582, 2529], "fixed")
     output_heading = document.add_heading("输出参数", level=3)
     set_paragraph_format(output_heading, font="微软雅黑", size=11)
     output_table = add_parameter_table(
@@ -373,6 +411,7 @@ def make_api_test_report_template(path: Path):
         [["1", "oldResult", "旧结果", "旧结果数据"]],
     )
     set_table_format(output_table, "E7E6E6")
+    set_table_layout(output_table, 7440, "dxa", [1080, 2200, 2200, 1960], "autofit")
     result_heading = document.add_heading("测试结果", level=3)
     set_paragraph_format(result_heading, font="微软雅黑", size=11)
     result_body = document.add_paragraph("测试结果与预期结果一致，测试通过。")
@@ -815,6 +854,9 @@ class ApiRequirementTest(unittest.TestCase):
             [cell.text for cell in document.tables[2].rows[0].cells],
             ["序号", "参数项", "名称", "结果数据"],
         )
+        output_layout = table_layout_signature(document.tables[2])
+        for input_index in (1, 3, 5):
+            self.assertEqual(table_layout_signature(document.tables[input_index]), output_layout)
         self.assertEqual(len(document.inline_shapes), 3)
         self.assertEqual(text.count("测试结果与预期结果一致，测试通过。"), 3)
 

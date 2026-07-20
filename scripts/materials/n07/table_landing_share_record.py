@@ -8,9 +8,11 @@ from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
-from materials.n07.api_launch_record import _save_document
-from materials.n07.api_test_report import _convert_legacy_doc_template
 from materials.n07.table_landing import read_table_landing_work_orders
+from materials.shared.office_word import (
+    convert_legacy_doc_template as _convert_legacy_doc_template,
+    save_word_document as _save_document,
+)
 from materials.shared.word_sections import (
     clone_paragraph_with_text,
     clone_table_with_data,

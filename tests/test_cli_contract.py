@@ -18,6 +18,60 @@ def load_fill_document_module():
 
 
 class CliContractTest(unittest.TestCase):
+    def test_registry_exposes_canonical_material_types_without_filename_aliases(self):
+        module = load_fill_document_module()
+
+        self.assertEqual(
+            module.registered_material_types(),
+            (
+                "01-API接口开发_需求文档",
+                "02-API接口开发_数据模型设计",
+                "03-API接口开发_接口开发代码",
+                "04-API接口开发_接口测试报告",
+                "05-API接口开发_作业上线记录",
+                "01-库表落地方式_需求文档",
+                "02-库表落地方式_数据模型设计",
+                "04-库表落地方式_测试报告",
+                "05-库表落地方式_作业上线记录",
+                "06-库表落地方式_共享记录",
+            ),
+        )
+
+    def test_registry_alias_resolves_to_the_canonical_spec(self):
+        module = load_fill_document_module()
+
+        canonical = module.get_material_spec("04-API接口开发_接口测试报告")
+        alias = module.get_material_spec("04-接口测试报告（含《API接口列表》）")
+
+        self.assertIs(alias, canonical)
+
+    def test_supported_material_types_combines_registered_and_legacy_dispatch(self):
+        module = load_fill_document_module()
+
+        supported = module.supported_material_types()
+
+        self.assertEqual(len(supported), 17)
+        self.assertIn("01-API接口开发_需求文档", supported)
+        self.assertIn("04-数据统计分析_结果表及使用说明", supported)
+        self.assertNotIn("03-接口开发代码", supported)
+
+    def test_unsupported_material_error_is_generated_from_supported_types(self):
+        module = load_fill_document_module()
+
+        with self.assertRaises(ValueError) as context:
+            module.fill_document(
+                excel_path="ledger.xlsx",
+                service_dir="N08-数据报表服务",
+                material_type="不存在的材料",
+                template_path="template.docx",
+                output_path="output.docx",
+            )
+
+        message = str(context.exception)
+        self.assertIn("不支持的材料类型: 不存在的材料", message)
+        self.assertIn("01-API接口开发_需求文档", message)
+        self.assertIn("04-数据统计分析_结果表及使用说明", message)
+
     def test_output_directory_resolves_to_material_filename_and_extension(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:

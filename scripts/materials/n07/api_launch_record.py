@@ -18,9 +18,14 @@ from materials.n07.api_code_doc import (
     _safe_name,
 )
 from materials.n07.api_requirement import _normalize_heading
-from materials.n07.api_test_report import _convert_legacy_doc_template, _escape_powershell_string
 from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import read_api_work_orders
+from materials.shared.office_word import (
+    convert_docx_to_legacy_doc,
+    convert_legacy_doc_template,
+    escape_powershell_string,
+    save_word_document,
+)
 from materials.shared.word_sections import (
     clone_paragraph_with_text,
     clone_table_with_data,
@@ -198,52 +203,25 @@ def _build_record_elements(document, orders, report_images_by_order, prototypes)
 
 
 def _convert_docx_to_legacy_doc(docx_path, output_path):
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    script = f"""
-$word = $null
-$doc = $null
-try {{
-    $word = New-Object -ComObject Word.Application
-    $word.Visible = $false
-    $word.DisplayAlerts = 0
-    $doc = $word.Documents.Open('{_escape_powershell_string(str(Path(docx_path).resolve()))}')
-    foreach ($field in $doc.Fields) {{ $field.Update() | Out-Null }}
-    foreach ($toc in $doc.TablesOfContents) {{ $toc.Update() }}
-    $doc.SaveAs([ref] '{_escape_powershell_string(str(output.resolve()))}', [ref] 0)
-    Write-Output 'CONVERTED'
-}} finally {{
-    if ($doc) {{ $doc.Close($false) }}
-    if ($word) {{ $word.Quit() }}
-}}
-"""
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=120,
-    )
-    if not output.exists() or output.stat().st_size == 0:
-        raise RuntimeError(
-            f"无法将 .docx 输出转换为旧版 .doc: {output}; "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return output
+    return convert_docx_to_legacy_doc(docx_path, output_path, runner=subprocess.run)
+
+
+def _escape_powershell_string(value):
+    return escape_powershell_string(value)
+
+
+def _convert_legacy_doc_template(template_path, work_dir):
+    return convert_legacy_doc_template(template_path, work_dir, runner=subprocess.run)
 
 
 def _save_document(document, output_path, work_dir):
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.suffix.lower() == ".doc":
-        Path(work_dir).mkdir(parents=True, exist_ok=True)
-        docx_output = Path(work_dir) / f"{output.stem}.docx"
-        document.save(docx_output)
-        _convert_docx_to_legacy_doc(docx_output, output)
-        return str(output)
-    document.save(output)
-    update_toc_via_com(output)
-    return str(output)
+    return save_word_document(
+        document,
+        output_path,
+        work_dir,
+        legacy_converter=_convert_docx_to_legacy_doc,
+        toc_updater=update_toc_via_com,
+    )
 
 
 def build_api_launch_record_document(excel_path, service_dir, template_path, output_path):

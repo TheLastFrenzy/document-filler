@@ -120,8 +120,175 @@ class StatsResultDispatchTest(unittest.TestCase):
 
         for banned in ["清洗", "抽取", "加密", "质量检查"]:
             self.assertNotIn(banned, text)
-        self.assertIn("数据范围确认", text)
+        self.assertIn("依据", text)
         self.assertIn("字段口径", text)
+        self.assertNotIn("数据范围确认：", text)
+
+    def test_business_logic_steps_use_direct_descriptions_and_concise_write_summary(self):
+        module = load_builder_module()
+        sql = """
+        -- 过滤养老人员表中的无效退休数据
+        insert into FUSION_UNION_RETIREMENT
+          (member_id, retirement_date, match_state)
+        select
+          a.member_card_id,
+          b.txrq,
+          case when b.zjhm is null then '未匹配' else '已匹配' end
+        from DWD_TB_UNIONMEMBER a
+        left join DWD_ZWY_YLRYQK_A_XXB b
+          on a.member_card_id = b.zjhm and a.member_name = b.xm
+        where b.jhpt_delete = 0
+        """
+        record = {
+            "result_cn": "工会会员退休信息比对表",
+            "result_en": "FUSION_UNION_RETIREMENT",
+            "sources": ["DWD_TB_UNIONMEMBER", "DWD_ZWY_YLRYQK_A_XXB"],
+            "nodes": [{"label": "退休信息比对", "sql": sql}],
+            "fields": [
+                {"字段中文名": "会员标识"},
+                {"字段中文名": "办理退休日期"},
+                {"字段中文名": "匹配状态"},
+            ],
+        }
+        resource_info = {
+            "DWD_TB_UNIONMEMBER": {"资源名称": "工会会员信息表"},
+            "DWD_ZWY_YLRYQK_A_XXB": {"资源名称": "养老人员情况表"},
+        }
+
+        text = "\n".join(module.build_business_logic_steps(record, resource_info))
+
+        self.assertIn("过滤养老人员表中的无效退休数据", text)
+        self.assertIn(
+            "DWD_TB_UNIONMEMBER.member_card_id = DWD_ZWY_YLRYQK_A_XXB.zjhm",
+            text,
+        )
+        self.assertIn(
+            "DWD_TB_UNIONMEMBER.member_name = DWD_ZWY_YLRYQK_A_XXB.xm",
+            text,
+        )
+        self.assertIn("退休信息比对从工会会员信息表（DWD_TB_UNIONMEMBER）读取数据并写入FUSION_UNION_RETIREMENT", text)
+        self.assertIn("按条件生成状态、标签或分类结果", text)
+        self.assertIn("左外连接", text)
+        self.assertIn("关系代数", text)
+        self.assertIn("确定性记录链接", text)
+        self.assertIn("规则驱动分类", text)
+        for prefix in [
+            "数据来源准备：",
+            "节点业务说明：",
+            "节点与来源对应：",
+            "表关联：",
+            "字段映射（",
+            "数据范围确认：",
+            "计算方法：",
+            "结果字段整理：",
+            "结果输出：",
+        ]:
+            self.assertNotIn(prefix, text)
+        self.assertNotIn("<-", text)
+        self.assertNotIn("按主键或业务编码关联补齐维度信息", text)
+        self.assertNotIn("生成结果表所需的统计口径和明细字段", text)
+
+    def test_business_logic_steps_summarize_generated_and_constant_fields(self):
+        module = load_builder_module()
+        sql = """
+        insert into FUSION_DISTRICT_RESULT (id, area, dsjzx_taskid, org_name)
+        select regexp_replace(uuid(), '-', ''), '上海市杨浦区', '${taskid}', org_name
+        from MQX_DISTRICT_SOURCE
+        where bdc_dt = (select max(bdc_dt) from MQX_DISTRICT_SOURCE)
+        """
+        record = {
+            "result_cn": "区级汇总结果表",
+            "result_en": "FUSION_DISTRICT_RESULT",
+            "sources": ["MQX_DISTRICT_SOURCE"],
+            "nodes": [{"label": "杨浦区", "sql": sql}],
+            "fields": [{"字段中文名": "唯一标识"}, {"字段中文名": "所属区"}],
+        }
+
+        text = "\n".join(module.build_business_logic_steps(record, {}))
+
+        self.assertIn("杨浦区从MQX_DISTRICT_SOURCE读取数据并写入FUSION_DISTRICT_RESULT", text)
+        self.assertIn("生成唯一标识", text)
+        self.assertIn("写入任务批次号", text)
+        self.assertIn("将所属区固定为“上海市杨浦区”", text)
+        self.assertIn("按目标表结构整理业务字段", text)
+        self.assertNotIn("<-", text)
+        self.assertIn("时态数据最新快照", text)
+
+    def test_business_logic_steps_do_not_invent_database_theory(self):
+        module = load_builder_module()
+        record = {
+            "result_cn": "简单结果表",
+            "result_en": "SIMPLE_RESULT",
+            "sources": ["SIMPLE_SOURCE"],
+            "nodes": [
+                {
+                    "label": "写入结果",
+                    "sql": "insert into SIMPLE_RESULT (id) select id from SIMPLE_SOURCE",
+                }
+            ],
+            "fields": [{"字段中文名": "标识"}],
+        }
+
+        text = "\n".join(module.build_business_logic_steps(record, {}))
+
+        for unsupported in ["窗口函数", "集合并运算", "确定性记录链接", "规则驱动分类"]:
+            self.assertNotIn(unsupported, text)
+
+    def test_business_logic_steps_keep_every_write_node_without_expanding_mappings(self):
+        module = load_builder_module()
+        nodes = []
+        for index in range(1, 13):
+            nodes.append(
+                {
+                    "label": f"地区{index}",
+                    "sql": (
+                        "insert into RESULT_TABLE "
+                        "(id, area, field_1, field_2, field_3, field_4, field_5, field_6, field_7) "
+                        f"select id, '地区{index}', field_1_{index}, field_2_{index}, "
+                        f"field_3_{index}, field_4_{index}, field_5_{index}, field_6_{index}, "
+                        f"field_7_{index} from SOURCE_{index}"
+                    ),
+                }
+            )
+        record = {
+            "result_cn": "地区结果表",
+            "result_en": "RESULT_TABLE",
+            "sources": [f"SOURCE_{index}" for index in range(1, 13)],
+            "nodes": nodes,
+            "fields": [{"字段中文名": "标识"}, {"字段中文名": "地区"}],
+        }
+
+        steps = module.build_business_logic_steps(record, {})
+        text = "\n".join(steps)
+        write_steps = [line for line in steps if "写入RESULT_TABLE" in line]
+
+        self.assertIn("SOURCE_12", text)
+        self.assertIn("地区12从SOURCE_12读取数据并写入RESULT_TABLE", text)
+        self.assertEqual(len(write_steps), 12)
+        self.assertNotIn("field_7 <- field_7_12", text)
+        self.assertNotIn("<-", text)
+
+    def test_relation_row_height_expands_for_detailed_logic(self):
+        module = load_builder_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            template = temp / "template.xlsx"
+            output = temp / "out.xlsx"
+            make_result_template(template)
+            records = make_records_with_flowcharts(temp)
+            records[0]["logic_steps"] = [
+                f"步骤{index}：说明源表字段、目标字段、关联条件和业务规则。" * 3
+                for index in range(1, 10)
+            ]
+
+            module.build_workbook(template, output, records, {})
+
+            workbook = openpyxl.load_workbook(output)
+            relation = workbook["2、表融合关系"]
+            height = relation.row_dimensions[2].height
+            workbook.close()
+
+        self.assertGreater(height, 220)
 
     def test_dispatches_to_stats_result_workbook_builder(self):
         module = load_fill_document_module()

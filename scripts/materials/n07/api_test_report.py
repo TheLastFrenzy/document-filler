@@ -19,6 +19,10 @@ from materials.n07.api_code_doc import (
 from materials.n07.api_requirement import _normalize_heading, parse_api_report
 from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import read_api_work_orders
+from materials.shared.office_word import (
+    convert_legacy_doc_template,
+    escape_powershell_string,
+)
 from materials.shared.word_sections import (
     clone_paragraph_with_text,
     clone_table_with_data,
@@ -308,6 +312,63 @@ def _image_paragraph_element(document, prototype, image_path):
     return element
 
 
+def _replace_table_property(table, reference, property_name):
+    properties = table.find(qn("w:tblPr"))
+    reference_properties = reference.find(qn("w:tblPr"))
+    if properties is None or reference_properties is None:
+        return
+    existing = properties.find(qn(property_name))
+    if existing is not None:
+        properties.remove(existing)
+    reference_value = reference_properties.find(qn(property_name))
+    if reference_value is not None:
+        properties.append(deepcopy(reference_value))
+
+
+def _grid_widths(table):
+    grid = table.find(qn("w:tblGrid"))
+    if grid is None:
+        return []
+    return [int(column.get(qn("w:w"), "0")) for column in grid.findall(qn("w:gridCol"))]
+
+
+def _match_parameter_table_layout(table, reference):
+    source_widths = _grid_widths(table)
+    target_widths = _grid_widths(reference)
+    source_total = sum(source_widths)
+    target_total = sum(target_widths)
+    if not source_widths or source_total <= 0 or target_total <= 0:
+        return table
+
+    scaled_widths = [round(width * target_total / source_total) for width in source_widths]
+    scaled_widths[-1] += target_total - sum(scaled_widths)
+    for property_name in ("w:tblW", "w:tblInd", "w:tblLayout"):
+        _replace_table_property(table, reference, property_name)
+
+    grid = table.find(qn("w:tblGrid"))
+    for column, width in zip(grid.findall(qn("w:gridCol")), scaled_widths):
+        column.set(qn("w:w"), str(width))
+
+    for row in table.findall(qn("w:tr")):
+        logical_index = 0
+        for cell in row.findall(qn("w:tc")):
+            properties = cell.find(qn("w:tcPr"))
+            span_node = properties.find(qn("w:gridSpan")) if properties is not None else None
+            span = int(span_node.get(qn("w:val"), "1")) if span_node is not None else 1
+            if properties is None:
+                properties = deepcopy(reference.find(".//" + qn("w:tcPr")))
+                cell.insert(0, properties)
+            cell_width = properties.find(qn("w:tcW"))
+            if cell_width is None:
+                cell_width = deepcopy(reference.find(".//" + qn("w:tcW")))
+                properties.insert(0, cell_width)
+            width = sum(scaled_widths[logical_index : logical_index + span])
+            cell_width.set(qn("w:w"), str(width))
+            cell_width.set(qn("w:type"), "dxa")
+            logical_index += span
+    return table
+
+
 def _build_content_elements(document, orders, report_images_by_order, prototypes):
     elements = []
     for order in orders:
@@ -319,12 +380,13 @@ def _build_content_elements(document, orders, report_images_by_order, prototypes
                 )
             )
             elements.append(clone_paragraph_with_text(prototypes.input_heading, "输入参数"))
+            input_table = clone_table_with_data(
+                prototypes.input_parameter_table,
+                ["序号", "参数项", "名称", "测试数据1"],
+                _parameter_rows(interface.input_groups, ["测试数据1", "测试数据", "测试值", "示例值", "示例"]),
+            )
             elements.append(
-                clone_table_with_data(
-                    prototypes.input_parameter_table,
-                    ["序号", "参数项", "名称", "测试数据1"],
-                    _parameter_rows(interface.input_groups, ["测试数据1", "测试数据", "测试值", "示例值", "示例"]),
-                )
+                _match_parameter_table_layout(input_table, prototypes.output_parameter_table)
             )
             elements.append(clone_paragraph_with_text(prototypes.output_heading, "输出参数"))
             elements.append(
@@ -342,46 +404,11 @@ def _build_content_elements(document, orders, report_images_by_order, prototypes
 
 
 def _escape_powershell_string(value):
-    return str(value).replace("'", "''")
+    return escape_powershell_string(value)
 
 
 def _convert_legacy_doc_template(template_path, work_dir):
-    template = Path(template_path)
-    if template.suffix.lower() == ".docx":
-        return template
-    if template.suffix.lower() != ".doc":
-        raise ValueError(f"API接口测试报告模板仅支持 .doc 或 .docx: {template}")
-
-    Path(work_dir).mkdir(parents=True, exist_ok=True)
-    output = Path(work_dir) / f"{template.stem}.docx"
-    script = f"""
-$word = $null
-$doc = $null
-try {{
-    $word = New-Object -ComObject Word.Application
-    $word.Visible = $false
-    $word.DisplayAlerts = 0
-    $doc = $word.Documents.Open('{_escape_powershell_string(str(template.resolve()))}')
-    $doc.SaveAs([ref] '{_escape_powershell_string(str(output.resolve()))}', [ref] 16)
-    Write-Output 'CONVERTED'
-}} finally {{
-    if ($doc) {{ $doc.Close($false) }}
-    if ($word) {{ $word.Quit() }}
-}}
-"""
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=120,
-    )
-    if not output.exists() or output.stat().st_size == 0:
-        raise RuntimeError(
-            f"无法将旧版 .doc 模板转换为 .docx: {template}; "
-            f"stdout={result.stdout.strip()} stderr={result.stderr.strip()}"
-        )
-    return output
+    return convert_legacy_doc_template(template_path, work_dir, runner=subprocess.run)
 
 
 def build_api_test_report_document(excel_path, service_dir, template_path, output_path):

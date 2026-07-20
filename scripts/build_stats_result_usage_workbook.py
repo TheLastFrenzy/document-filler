@@ -414,11 +414,338 @@ def sql_comment_summary(sql: str) -> str:
     return first[:80] or "执行程序节点"
 
 
-def compact_join(items: list[str], limit: int = 4) -> str:
+SQL_COMMENT_PREFIXES = (
+    "dialect:",
+    "and ",
+    "or ",
+    "where ",
+    "select ",
+    "from ",
+    "join ",
+    "on ",
+    "insert ",
+    "update ",
+    "delete ",
+    "alter ",
+    "drop ",
+)
+
+
+def natural_sql_comments(sql: str) -> list[str]:
+    comments: list[str] = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("--"):
+            continue
+        comment = sanitize_stats_logic_text(stripped[2:].strip())
+        lower = comment.lower()
+        if not comment or lower.startswith(SQL_COMMENT_PREFIXES):
+            continue
+        if comment not in comments:
+            comments.append(comment)
+    return comments
+
+
+def _find_matching_parenthesis(text: str, start: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if char == quote and (index == 0 or text[index - 1] != "\\"):
+                quote = None
+            continue
+        if char in "'\"`":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _find_top_level_keyword(text: str, keyword: str, start: int = 0) -> int | None:
+    depth = 0
+    quote: str | None = None
+    lower = text.lower()
+    index = start
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote and (index == 0 or text[index - 1] != "\\"):
+                quote = None
+            index += 1
+            continue
+        if char in "'\"`":
+            quote = char
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and lower.startswith(keyword, index):
+            before = lower[index - 1] if index else " "
+            after_index = index + len(keyword)
+            after = lower[after_index] if after_index < len(lower) else " "
+            if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                return index
+        index += 1
+    return None
+
+
+SQL_ALIAS_STOP_WORDS = {
+    "where",
+    "left",
+    "right",
+    "inner",
+    "full",
+    "cross",
+    "join",
+    "on",
+    "group",
+    "order",
+    "having",
+    "union",
+    "limit",
+}
+
+
+def sql_alias_map(sql: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    clean = strip_sql_comments(sql)
+    pattern = re.compile(
+        r"\b(?:from|join)\s+([`\"A-Za-z_][`\"\w.]*)"
+        r"(?:\s+(?:as\s+)?([A-Za-z_][\w]*))?",
+        flags=re.I,
+    )
+    for match in pattern.finditer(clean):
+        table = base_resource_name(match.group(1))
+        alias = str(match.group(2) or "").strip()
+        if alias.lower() in SQL_ALIAS_STOP_WORDS:
+            alias = ""
+        if table:
+            aliases[table.lower()] = table
+        if table and alias:
+            aliases[alias.lower()] = table
+    return aliases
+
+
+def resolve_sql_field(reference: str, aliases: dict[str, str]) -> str:
+    value = str(reference or "").strip().strip("`\"")
+    parts = [part.strip("`\"") for part in value.split(".") if part.strip("`\"")]
+    if len(parts) < 2:
+        return value
+    alias, field = parts[-2], parts[-1]
+    table = aliases.get(alias.lower(), base_resource_name(alias))
+    return f"{table}.{field}" if table else value
+
+
+def extract_join_details(sql: str) -> list[dict]:
+    clean = strip_sql_comments(sql)
+    aliases = sql_alias_map(clean)
+    pattern = re.compile(
+        r"\b(?:(left(?:\s+outer)?|right(?:\s+outer)?|full(?:\s+outer)?|inner|cross)\s+)?"
+        r"join\s+([`\"A-Za-z_][`\"\w.]*)"
+        r"(?:\s+(?:as\s+)?([A-Za-z_][\w]*))?\s+on\s+"
+        r"(.+?)(?=\b(?:(?:left|right|full)(?:\s+outer)?|inner|cross)?\s*join\b|"
+        r"\bwhere\b|\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\bunion\b|;|$)",
+        flags=re.I | re.S,
+    )
+    kind_names = {
+        "left": "左外连接",
+        "left outer": "左外连接",
+        "right": "右外连接",
+        "right outer": "右外连接",
+        "full": "全外连接",
+        "full outer": "全外连接",
+        "inner": "内连接",
+        "cross": "交叉连接",
+        "": "内连接",
+    }
+    joins: list[dict] = []
+    for match in pattern.finditer(clean):
+        table = base_resource_name(match.group(2))
+        alias = str(match.group(3) or "").strip()
+        if alias and alias.lower() not in SQL_ALIAS_STOP_WORDS:
+            aliases[alias.lower()] = table
+        condition = " ".join(match.group(4).split())
+        pairs = []
+        for pair in re.finditer(
+            r"([`\"A-Za-z_][`\"\w.]*\.[`\"A-Za-z_][`\"\w]*)\s*=\s*"
+            r"([`\"A-Za-z_][`\"\w.]*\.[`\"A-Za-z_][`\"\w]*)",
+            condition,
+            flags=re.I,
+        ):
+            resolved = (
+                resolve_sql_field(pair.group(1), aliases),
+                resolve_sql_field(pair.group(2), aliases),
+            )
+            if resolved not in pairs:
+                pairs.append(resolved)
+        joins.append(
+            {
+                "kind": kind_names.get(" ".join(str(match.group(1) or "").lower().split()), "连接"),
+                "table": table,
+                "pairs": pairs,
+                "condition": condition,
+            }
+        )
+    return joins
+
+
+def _clean_mapping_expression(expression: str, target_column: str) -> str:
+    value = " ".join(str(expression or "").split())
+    escaped = re.escape(target_column.strip("`\""))
+    value = re.sub(rf"\s+as\s+[`\"]?{escaped}[`\"]?\s*$", "", value, flags=re.I)
+    return value
+
+
+def extract_insert_select_mappings(sql: str) -> list[dict]:
+    clean = strip_sql_comments(sql)
+    pattern = re.compile(
+        r"\binsert\s+(?:overwrite\s+table\s+|into\s+(?:table\s+)?)"
+        r"[`\"]?([A-Za-z_][\w.]*)[`\"]?",
+        flags=re.I,
+    )
+    batches: list[dict] = []
+    for match in pattern.finditer(clean):
+        position = match.end()
+        while position < len(clean) and clean[position].isspace():
+            position += 1
+        if position >= len(clean) or clean[position] != "(":
+            continue
+        columns_end = _find_matching_parenthesis(clean, position)
+        if columns_end is None:
+            continue
+        select_position = _find_top_level_keyword(clean, "select", columns_end + 1)
+        if select_position is None:
+            continue
+        from_position = _find_top_level_keyword(clean, "from", select_position + len("select"))
+        if from_position is None:
+            continue
+        columns = [part.strip().strip("`\"") for part in split_columns(clean[position + 1 : columns_end])]
+        expressions = split_columns(clean[select_position + len("select") : from_position])
+        mappings = [
+            (column, _clean_mapping_expression(expression, column))
+            for column, expression in zip(columns, expressions)
+            if column and str(expression or "").strip()
+        ]
+        source_match = re.match(
+            r"\s+([`\"A-Za-z_][`\"\w.]*)",
+            clean[from_position + len("from") :],
+            flags=re.I,
+        )
+        batches.append(
+            {
+                "target": base_resource_name(match.group(1)),
+                "source": base_resource_name(source_match.group(1)) if source_match else "",
+                "mappings": mappings,
+            }
+        )
+    return batches
+
+
+def mapping_preview(mappings: list[tuple[str, str]]) -> str:
+    def priority(item):
+        target, expression = item
+        normalized = expression.strip().strip("`\"")
+        direct = normalized.lower() in {target.lower(), f"a.{target.lower()}", f"b.{target.lower()}"}
+        return (direct,)
+
+    ordered = sorted(enumerate(mappings), key=lambda item: (priority(item[1]), item[0]))
+    return "、".join(f"{target} <- {expression}" for _, (target, expression) in ordered)
+
+
+MAPPING_FIELD_LABELS = {
+    "area": "所属区",
+    "district": "所属区",
+    "district_name": "所属区",
+    "region": "所属区域",
+    "region_name": "所属区域",
+}
+
+
+def summarize_write_batch(batch: dict, resource_info: dict[str, dict]) -> str:
+    label = str(batch.get("node_label") or "").strip()
+    source = source_label(batch.get("source", ""), resource_info)
+    target = str(batch.get("target") or "目标表").strip()
+    if label and label.lower() not in {"sql", "sql语句", "写入节点"}:
+        action = f"{label}从{source}读取数据并写入{target}" if source else f"{label}将加工结果写入{target}"
+    else:
+        action = f"从{source}读取数据并写入{target}" if source else f"将加工结果写入{target}"
+
+    details: list[str] = []
+    for field, expression in batch.get("mappings", []):
+        field_key = str(field or "").strip().lower()
+        expression_text = " ".join(str(expression or "").split())
+        expression_lower = expression_text.lower()
+        if re.search(r"\buuid\s*\(", expression_lower):
+            details.append("生成唯一标识")
+        if "${taskid}" in expression_lower:
+            details.append("写入任务批次号")
+        constant = re.fullmatch(r"'([^']*)'", expression_text)
+        if constant and field_key in MAPPING_FIELD_LABELS:
+            details.append(f"将{MAPPING_FIELD_LABELS[field_key]}固定为“{constant.group(1)}”")
+        if re.search(r"\bcase\b|\bif\s*\(", expression_lower):
+            details.append("按条件生成状态、标签或分类结果")
+        if re.search(r"\b(?:count|sum|avg|min|max)\s*\(", expression_lower):
+            details.append("汇总计算统计指标")
+
+    details = list(dict.fromkeys(details))
+    details.append("按目标表结构整理业务字段")
+    return f"{action}，{'，'.join(details)}。"
+
+
+def operation_descriptions(sqls: list[str]) -> list[str]:
+    combined = "\n".join(sqls)
+    descriptions: list[str] = []
+    if re.search(r"row_number\s*\(\s*\)\s*over\s*\([^)]*partition\s+by", combined, flags=re.I | re.S):
+        descriptions.append("采用窗口函数与分区排序，在业务分组内保留目标顺序的记录")
+    if re.search(r"\b\w*(?:dt|date|month|time)\w*\s*=\s*\(\s*select\s+max\s*\(", combined, flags=re.I | re.S):
+        descriptions.append("采用时态数据最新快照选择，以 MAX 分区/日期值读取最新批次")
+    if re.search(r"\bgroup\s+by\b", combined, flags=re.I) and re.search(
+        r"\b(?:count|sum|avg|min|max)\s*\(", combined, flags=re.I
+    ):
+        descriptions.append("采用分组聚合计算业务维度下的统计指标")
+    if re.search(r"\bunion(?:\s+all)?\b", combined, flags=re.I):
+        descriptions.append("采用集合并运算合并多来源同构记录")
+    if re.search(r"\bcase\b|\bif\s*\(", combined, flags=re.I):
+        descriptions.append("采用规则驱动分类生成状态、标签或分类字段")
+    if re.search(r"\bselect\s+distinct\b", combined, flags=re.I):
+        descriptions.append("采用集合语义去重形成唯一结果记录")
+    return descriptions
+
+
+def concrete_filter_descriptions(sqls: list[str]) -> list[str]:
+    combined = "\n".join(sqls)
+    descriptions: list[str] = []
+    for match in re.finditer(
+        r"([A-Za-z_]\w*\.)?(jhpt_delete|delete_flag|is_delete)\s*=\s*(['\"]?0['\"]?)",
+        combined,
+        flags=re.I,
+    ):
+        condition = f"{match.group(1) or ''}{match.group(2)} = {match.group(3)}"
+        descriptions.append(f"按 {condition} 排除已删除记录")
+    latest = re.search(
+        r"([A-Za-z_]\w*(?:dt|date|month|time)\w*)\s*=\s*\(\s*select\s+max\s*\(\s*\1\s*\)\s+from\s+([`\"\w.]+)",
+        combined,
+        flags=re.I | re.S,
+    )
+    if latest:
+        descriptions.append(
+            f"在{base_resource_name(latest.group(2))}中按 {latest.group(1)} = MAX({latest.group(1)}) 选择最新批次"
+        )
+    return list(dict.fromkeys(descriptions))
+
+
+def compact_join(items: list[str], limit: int | None = 4) -> str:
     if not items:
         return ""
-    shown = items[:limit]
-    suffix = f" 等{len(items)}张表" if len(items) > limit else ""
+    shown = items if limit is None else items[:limit]
+    suffix = f" 等{len(items)}张表" if limit is not None and len(items) > limit else ""
     return "、".join(shown) + suffix
 
 
@@ -500,34 +827,74 @@ def build_business_logic_steps(record: dict, resource_info: dict[str, dict]) -> 
     result_en = record["result_en"]
     sources = record["sources"]
     sqls = [node["sql"] for node in record["nodes"] if node.get("sql")]
-    source_text = compact_join([source_label(src, resource_info) for src in sources], limit=3)
+    source_text = compact_join([source_label(src, resource_info) for src in sources], limit=None)
     theme = result_theme(result_cn, result_en)
-    where_hints = extract_where_hints(sqls)
-    calc_hints = extract_calc_hints(sqls)
 
     steps: list[str] = []
     if source_text:
-        steps.append(f"数据来源准备：读取{source_text}，作为{theme}的基础数据。")
+        steps.append(f"读取{source_text}，作为{theme}的基础数据。")
     else:
-        steps.append(f"数据来源准备：读取程序中配置的基础数据，作为{theme}的输入。")
+        steps.append(f"读取程序中配置的基础数据，作为{theme}的输入。")
 
-    if where_hints:
-        steps.append(f"数据范围确认：{ '，'.join(where_hints[:4]) }，形成可参与统计分析的业务记录范围。")
-    else:
-        steps.append("数据范围确认：按结果表字段口径整理源表记录，保留本次统计分析所需的业务范围。")
+    comments = []
+    for sql in sqls:
+        for comment in natural_sql_comments(sql):
+            if comment not in comments:
+                comments.append(comment)
+    for comment in comments:
+        steps.append(f"{comment.rstrip('。；;')}。")
 
-    if calc_hints:
-        steps.append(f"融合加工计算：{ '，'.join(calc_hints[:4]) }，生成结果表所需的统计口径和明细字段。")
+    mapping_batches = []
+    joins = []
+    for node in record.get("nodes", []):
+        sql = str(node.get("sql") or "")
+        if not sql:
+            continue
+        node_label = re.sub(r"^\s*\d+(?:\.\d+)*[.、]?\s*", "", str(node.get("label") or "")).strip()
+        batches = extract_insert_select_mappings(sql)
+        for batch in batches:
+            batch["node_label"] = node_label
+            mapping_batches.append(batch)
+        joins.extend(extract_join_details(sql))
+
+    for join in joins:
+        pair_text = "、".join(f"{left} = {right}" for left, right in join["pairs"])
+        detail = f"，关联条件为{pair_text}" if pair_text else f"，ON 条件为{join['condition']}"
+        terminology = "，属于关系代数中的连接运算"
+        if len(join["pairs"]) >= 2:
+            terminology += "，并以多字段执行确定性记录链接"
+        steps.append(f"通过{join['kind']}接入{source_label(join['table'], resource_info)}{detail}{terminology}。")
+
+    for batch in mapping_batches:
+        steps.append(summarize_write_batch(batch, resource_info))
+
+    filters = concrete_filter_descriptions(sqls)
+    operations = operation_descriptions(sqls)
+    if filters:
+        steps.append(f"{'；'.join(filters)}。")
     else:
-        steps.append("融合加工计算：按照结果表字段映射关系整理数据，形成可直接落表的统计分析结果。")
+        field_preview = "、".join(
+            field.get("字段中文名", "")
+            for field in record.get("fields", [])
+            if field.get("字段中文名")
+        )
+        scope_source = source_text or "程序配置源表"
+        if field_preview:
+            steps.append(
+                f"依据{field_preview}等结果字段口径，从{scope_source}保留对应源字段记录。"
+            )
+        else:
+            steps.append(f"依据结果表字段口径，从{scope_source}保留对应源字段记录。")
+    if operations:
+        steps.append(f"{'；'.join(operations)}。")
 
     field_names = [field.get("字段中文名", "") for field in record.get("fields", []) if field.get("字段中文名")]
     if field_names:
-        preview = "、".join(field_names[:4])
-        suffix = "等字段" if len(field_names) > 4 else "字段"
-        steps.append(f"结果字段整理：输出{preview}{suffix}，补充业务时间、批次号等运行信息。")
+        preview = "、".join(field_names[:3])
+        suffix = f"等{len(field_names)}个结果字段" if len(field_names) > 3 else "等结果字段"
+        steps.append(f"按结果表结构整理{preview}{suffix}，并补充业务时间、批次号等运行信息。")
 
-    steps.append(f"结果输出：将统计结果写入{result_cn}（{result_en}），供后续数据统计分析应用使用。")
+    steps.append(f"将统计结果写入{result_cn}（{result_en}），供后续数据统计分析应用使用。")
     return [sanitize_stats_logic_text(step) for step in steps]
 
 
@@ -1008,7 +1375,8 @@ def fill_relation(ws, records: list[dict]) -> None:
 
         ws.cell(row + 1, 1, "")
         ws.cell(row + 1, 2, "文字描述")
-        ws.cell(row + 1, 3, "\n".join(f"{i + 1}\t{step}" for i, step in enumerate(record["logic_steps"])))
+        logic_text = "\n".join(f"{i + 1}\t{step}" for i, step in enumerate(record["logic_steps"]))
+        ws.cell(row + 1, 3, logic_text)
         ws.cell(row + 2, 1, "")
         ws.cell(row + 2, 2, "数据处理流程图")
         img = XLImage(record["flowchart"])
@@ -1016,7 +1384,11 @@ def fill_relation(ws, records: list[dict]) -> None:
         img.height = 665
         ws.add_image(img, f"C{row + 2}")
         ws.row_dimensions[row].height = 28
-        ws.row_dimensions[row + 1].height = max(80, min(220, 28 * len(record["logic_steps"])))
+        wrapped_lines = sum(
+            max(1, math.ceil(sum(2 if ord(char) > 127 else 1 for char in line) / 110))
+            for line in logic_text.splitlines()
+        )
+        ws.row_dimensions[row + 1].height = max(80, min(420, 22 * wrapped_lines))
         ws.row_dimensions[row + 2].height = 500
         for rr in (row + 1, row + 2):
             ws.cell(rr, 2).font = Font(name=DEFAULT_FONT_NAME, size=11, bold=True)

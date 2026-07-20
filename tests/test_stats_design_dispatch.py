@@ -321,6 +321,49 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertEqual(len([p for p in doc.paragraphs if p.style.name == "Heading 2" and p.text.startswith("结果表")]), 3)
             self.assertGreaterEqual(len(doc.tables), 10)
 
+    def test_stats_design_logic_keeps_more_than_fifteen_steps(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "02-数据统计分析_设计文档.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_single_fusion_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook_with_nullable_unique_values(relation)
+            make_catalog(catalog)
+
+            workbook = openpyxl.load_workbook(relation)
+            relation_sheet = workbook["2、表融合关系"]
+            relation_sheet["C2"] = "\n".join(
+                f"{index}\t完整加工步骤{index}" for index in range(1, 21)
+            )
+            workbook.save(relation)
+            workbook.close()
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            document = Document(output)
+            logic_table = next(
+                table
+                for table in document.tables
+                if table.rows[0].cells[0].text == "数据统计分析加工逻辑说明"
+            )
+            descriptions = [row.cells[1].text for row in logic_table.rows[2:]]
+
+            self.assertEqual(len(descriptions), 20)
+            self.assertEqual(descriptions[-1], "完整加工步骤20")
+
     def test_stats_design_entity_table_gives_directory_name_more_width(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:
