@@ -162,7 +162,7 @@ def inject_workbook_embeddings(path, embeddings):
             target.writestr(name, data)
 
 
-def make_table_landing_ledger(path):
+def make_table_landing_ledger(path, renamed_headers=False):
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.append(
@@ -174,9 +174,9 @@ def make_table_landing_ledger(path):
             "程序数",
             "工单描述",
             "结果表清单",
-            "数据统计分析执行周期",
+            "执行周期" if renamed_headers else "数据统计分析执行周期",
             "数据更新要求",
-            "自测报告附件",
+            "附件" if renamed_headers else "自测报告附件",
             "下发前置机中文名",
             "下发前置机数据库类型",
             "上线交付截图1",
@@ -466,6 +466,18 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual([task.launch_time for task in orders[1].tasks], ["2025-02-03 10:00:00", "2025-03-04 11:00:00"])
         self.assertEqual([task.source_volume_image for task in orders[1].tasks], [PNG_BYTES, PNG_BYTES])
         self.assertEqual([task.target_volume_image for task in orders[1].tasks], [PNG_BYTES, PNG_BYTES])
+
+    def test_read_table_landing_work_orders_accepts_renamed_cycle_and_attachment_headers(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing import read_table_landing_work_orders
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = make_table_landing_ledger(Path(temp_dir) / "ledger.xlsx", renamed_headers=True)
+            orders = read_table_landing_work_orders(ledger, "N07-库表落地方式")
+
+        self.assertEqual(orders[0].update_cycle, "每日")
+        self.assertEqual(orders[0].attachment_path.suffix, ".xlsx")
 
     def test_build_table_landing_requirement_document_replaces_business_and_detail_sections(self):
         if str(SCRIPTS) not in sys.path:

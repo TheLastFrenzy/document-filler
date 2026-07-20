@@ -11,6 +11,7 @@ from materials.shared.embedded_docx import (
     read_ole_anchors,
 )
 from materials.shared.ledger import merged_value_getter
+from materials.shared.ledger_sheet import select_ledger_sheet
 
 
 REQUIRED_TABLE_LANDING_HEADERS = (
@@ -26,6 +27,22 @@ REQUIRED_TABLE_LANDING_HEADERS = (
     "自测报告附件",
     "下发前置机中文名",
 )
+
+LEDGER_HEADER_ALIASES = {
+    "数据统计分析执行周期": ("执行周期", "数据统计分析执行周期"),
+    "自测报告附件": (
+        "附件",
+        "自测报告附件",
+        "03-数据统计分析_测试文档_工单自测报告附件",
+    ),
+}
+
+
+def ledger_header_index(headers, canonical_name):
+    for alias in LEDGER_HEADER_ALIASES.get(canonical_name, (canonical_name,)):
+        if alias in headers:
+            return headers.index(alias)
+    return -1
 
 REQUIRED_TASK_HEADERS = (
     "落地库名",
@@ -76,14 +93,14 @@ def _parse_program_count(value):
 
 def _read_order_rows(excel_path, service_dir):
     workbook = openpyxl.load_workbook(excel_path, data_only=True)
-    sheet = workbook.active
+    sheet = select_ledger_sheet(workbook)
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
-    missing = [header for header in REQUIRED_TABLE_LANDING_HEADERS if header not in headers]
+    missing = [header for header in REQUIRED_TABLE_LANDING_HEADERS if ledger_header_index(headers, header) < 0]
     if missing:
         workbook.close()
         raise ValueError(f"台账缺少必要列: {', '.join(missing)}")
 
-    columns = {header: headers.index(header) + 1 for header in REQUIRED_TABLE_LANDING_HEADERS}
+    columns = {header: ledger_header_index(headers, header) + 1 for header in REQUIRED_TABLE_LANDING_HEADERS}
     database_type_column = headers.index("下发前置机数据库类型") + 1 if "下发前置机数据库类型" in headers else None
     dispatch_description_column = (
         headers.index("下发任务简单说明（50字以内）") + 1
@@ -149,12 +166,13 @@ def _read_order_rows(excel_path, service_dir):
 
 def _header_column(excel_path, header):
     workbook = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
-    sheet = workbook.active
+    sheet = select_ledger_sheet(workbook)
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
     workbook.close()
-    if header not in headers:
+    index = ledger_header_index(headers, header)
+    if index < 0:
         raise ValueError(f"台账缺少必要列: {header}")
-    return headers.index(header) + 1
+    return index + 1
 
 
 def _workbook_payload(data):
@@ -322,7 +340,7 @@ def extract_ledger_images_by_row(excel_path, row_numbers, image_columns):
         return {}
 
     workbook = openpyxl.load_workbook(excel_path, read_only=True, data_only=False)
-    sheet = workbook.active
+    sheet = select_ledger_sheet(workbook)
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
     missing = [column for column in image_columns if column not in headers]
     if missing:

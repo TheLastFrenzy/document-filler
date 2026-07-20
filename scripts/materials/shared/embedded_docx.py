@@ -9,6 +9,8 @@ import zipfile
 import olefile
 import openpyxl
 
+from materials.shared.ledger_sheet import select_ledger_sheet
+
 
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 OLE_NS = "urn:schemas-microsoft-com:office:office"
@@ -129,12 +131,18 @@ def package_stream_from_ole(data):
 
 def _header_column(excel_path, header):
     workbook = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
-    sheet = workbook.active
+    sheet = select_ledger_sheet(workbook)
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
     workbook.close()
-    if header not in headers:
+    candidates = (
+        ("附件", "自测报告附件", "03-数据统计分析_测试文档_工单自测报告附件")
+        if header in {"附件", "自测报告附件", "03-数据统计分析_测试文档_工单自测报告附件"}
+        else (header,)
+    )
+    matched = next((candidate for candidate in candidates if candidate in headers), "")
+    if not matched:
         raise ValueError(f"台账缺少必要列: {header}")
-    return headers.index(header) + 1
+    return headers.index(matched) + 1
 
 
 def extract_embedded_docx_by_work_order(excel_path, work_orders, attachment_header, work_dir):

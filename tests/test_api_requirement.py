@@ -33,7 +33,7 @@ def load_fill_document_module():
     return module
 
 
-def make_api_ledger(path: Path):
+def make_api_ledger(path: Path, attachment_header="自测报告附件"):
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.append(
@@ -45,7 +45,7 @@ def make_api_ledger(path: Path):
             "程序数",
             "工单描述",
             "结果表清单",
-            "自测报告附件",
+            attachment_header,
         ]
     )
     sheet.append(
@@ -557,6 +557,35 @@ class ApiRequirementTest(unittest.TestCase):
             [item.chinese_name for item in orders[0].interfaces],
             ["境外人员获取令牌接口", "境外人员身份认证申请接口", "境外人员身份认证请求接口"],
         )
+
+    def test_read_api_work_orders_accepts_renamed_attachment_header(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.shared.ledger import read_api_work_orders
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = make_api_ledger(Path(temp_dir) / "ledger.xlsx", attachment_header="附件")
+            orders = read_api_work_orders(ledger, "N07-API接口开发")
+
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0].work_order_no, "WO-1")
+
+    def test_read_api_work_orders_uses_named_ledger_sheet_when_another_sheet_is_active(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.shared.ledger import read_api_work_orders
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = make_api_ledger(Path(temp_dir) / "ledger.xlsx", attachment_header="附件")
+            workbook = openpyxl.load_workbook(ledger)
+            workbook.active.title = "台账清单"
+            workbook.create_sheet("台账清单列说明")
+            workbook.active = 1
+            workbook.save(ledger)
+            orders = read_api_work_orders(ledger, "N07-API接口开发")
+
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0].work_order_no, "WO-1")
 
     def test_parse_self_report_preserves_input_groups_and_output_tables(self):
         if str(SCRIPTS) not in sys.path:

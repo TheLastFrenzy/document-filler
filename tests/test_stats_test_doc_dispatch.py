@@ -49,7 +49,7 @@ def make_ledger(path: Path):
 def make_new_column_ledger(path: Path):
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(["服务目录", "需求单号", "工单号", "工单标题", "结果表清单", "自测报告附件"])
+    ws.append(["服务目录", "需求单号", "工单号", "工单标题", "结果表清单", "附件"])
     ws.append(["N08-数据统计分析", "REQ-1", "WO-1", "新版工单标题", "结果表一 RESULT_ONE", None])
     wb.save(path)
 
@@ -159,12 +159,13 @@ class StatsTestDocDispatchTest(unittest.TestCase):
             ledger = Path(temp_dir) / "ledger.xlsx"
             make_new_column_ledger(ledger)
 
-            programs, _groups, _meta = helper.load_ledger_programs(str(ledger), "N08-数据统计分析")
+            programs, _groups, meta = helper.load_ledger_programs(str(ledger), "N08-数据统计分析")
 
         self.assertEqual(len(programs), 1)
         self.assertEqual(programs[0].work_name, "新版工单标题")
         self.assertEqual(programs[0].result_cn, "结果表一")
         self.assertEqual(programs[0].result_en, "RESULT_ONE")
+        self.assertEqual(meta["attach_col"], 6)
 
     def test_generates_docx_with_template_static_sections_and_conclusion_totals(self):
         module = load_fill_document_module()

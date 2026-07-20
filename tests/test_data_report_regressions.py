@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fill_document.py"
 CATALOG_COL = "02-数据报表_设计文档-数据来源库表清单对应数据目录代码"
+NEW_CATALOG_COL = "源表对应目录代码清单"
 PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
     b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
@@ -46,6 +47,52 @@ def content_bbox(path: Path):
 
 
 class DataReportRegressionTest(unittest.TestCase):
+    def test_read_excel_uses_named_ledger_sheet_when_another_sheet_is_active(self):
+        module = load_fill_document_module()
+        workbook = openpyxl.Workbook()
+        ledger_sheet = workbook.active
+        ledger_sheet.title = "台账清单"
+        ledger_sheet.append(["服务目录", "工单号", "工单标题"])
+        ledger_sheet.append(["N08-数据报表服务", "ORDER-1", "测试报表"])
+        workbook.create_sheet("台账清单列说明")
+        workbook.active = 1
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ledger = Path(temp_dir) / "ledger.xlsx"
+            workbook.save(ledger)
+            rows = module.read_excel(ledger, "N08-数据报表服务")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["工单号"], "ORDER-1")
+
+    def test_normalize_ledger_record_accepts_renamed_catalog_column(self):
+        module = load_fill_document_module()
+
+        normalized = module.normalize_ledger_record({NEW_CATALOG_COL: "DIR001/000001"})
+        legacy = module.normalize_ledger_record({CATALOG_COL: "DIR002/000002"})
+
+        self.assertEqual(module.DATA_REPORT_CATALOG_COL, NEW_CATALOG_COL)
+        self.assertEqual(normalized[NEW_CATALOG_COL], "DIR001/000001")
+        self.assertEqual(legacy[NEW_CATALOG_COL], "DIR002/000002")
+
+    def test_new_ledger_columns_take_precedence_during_transition(self):
+        module = load_fill_document_module()
+        record = {
+            NEW_CATALOG_COL: "NEW001/000001",
+            CATALOG_COL: "OLD001/000001",
+            "附件": "new.docx",
+            "交付物": "old.xlsx",
+            "执行周期": "每日",
+            "数据统计分析执行周期": "每月",
+        }
+
+        normalized = module.normalize_ledger_record(record)
+
+        self.assertEqual(normalized[NEW_CATALOG_COL], "NEW001/000001")
+        self.assertEqual(normalized["交付物"], "new.docx")
+        self.assertEqual(normalized["自测报告附件"], "new.docx")
+        self.assertEqual(normalized["数据统计分析执行周期"], "每日")
+
     def test_match_images_to_cells_accepts_wps_picture_names(self):
         module = load_fill_document_module()
         workbook = openpyxl.Workbook()
@@ -325,7 +372,7 @@ class DataReportRegressionTest(unittest.TestCase):
             ledger = Path(temp_dir) / "ledger.xlsx"
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.append(["服务目录", "交付物"])
+            ws.append(["服务目录", "附件"])
             ws.append(["N08-数据报表服务", ""])
             wb.save(ledger)
 
@@ -343,6 +390,7 @@ class DataReportRegressionTest(unittest.TestCase):
 
         self.assertEqual(result, "out.docx")
         extract.assert_called_once()
+        self.assertEqual(extract.call_args.args[3], [2])
         passed_rows = fill_requirement.call_args.args[0]
         self.assertEqual(passed_rows[0]["_attachment_files"], attachments[2])
         self.assertEqual(passed_rows[0]["_attachment_names"], ["目录共享表.xlsx", "口径说明.docx"])

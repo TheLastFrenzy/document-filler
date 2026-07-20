@@ -3,6 +3,8 @@ from pathlib import Path
 
 import openpyxl
 
+from materials.shared.ledger_sheet import select_ledger_sheet
+
 
 REQUIRED_API_HEADERS = (
     "服务目录",
@@ -14,6 +16,21 @@ REQUIRED_API_HEADERS = (
     "结果表清单",
     "自测报告附件",
 )
+
+LEDGER_HEADER_ALIASES = {
+    "自测报告附件": (
+        "附件",
+        "自测报告附件",
+        "03-数据统计分析_测试文档_工单自测报告附件",
+    ),
+}
+
+
+def ledger_header_index(headers, canonical_name):
+    for alias in LEDGER_HEADER_ALIASES.get(canonical_name, (canonical_name,)):
+        if alias in headers:
+            return headers.index(alias)
+    return -1
 
 
 @dataclass
@@ -79,14 +96,14 @@ def _parse_program_count(value):
 
 def read_api_work_orders(excel_path, service_dir):
     workbook = openpyxl.load_workbook(excel_path, data_only=True)
-    sheet = workbook.active
+    sheet = select_ledger_sheet(workbook)
     headers = [str(sheet.cell(1, column).value or "").strip() for column in range(1, sheet.max_column + 1)]
-    missing = [header for header in REQUIRED_API_HEADERS if header not in headers]
+    missing = [header for header in REQUIRED_API_HEADERS if ledger_header_index(headers, header) < 0]
     if missing:
         workbook.close()
         raise ValueError(f"台账缺少必要列: {', '.join(missing)}")
 
-    columns = {header: headers.index(header) + 1 for header in REQUIRED_API_HEADERS}
+    columns = {header: ledger_header_index(headers, header) + 1 for header in REQUIRED_API_HEADERS}
     get = merged_value_getter(sheet)
     grouped = {}
     order_keys = []

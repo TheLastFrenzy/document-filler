@@ -22,6 +22,7 @@ from xml.sax.saxutils import escape
 import fitz
 import olefile
 import openpyxl
+from materials.shared.ledger_sheet import select_ledger_sheet
 from PIL import Image as PILImage
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -44,11 +45,15 @@ if sys.platform == "win32":
 
 
 RESULT_HEADER = "统计分析结果表清单"
-ATTACHMENT_HEADER = "自测报告附件"
+ATTACHMENT_HEADER = "附件"
 LEDGER_COLUMN_ALIASES = {
     "工单内容": ("工单内容", "工单标题"),
     RESULT_HEADER: (RESULT_HEADER, "结果表清单"),
-    ATTACHMENT_HEADER: (ATTACHMENT_HEADER, "03-数据统计分析_测试文档_工单自测报告附件"),
+    ATTACHMENT_HEADER: (
+        ATTACHMENT_HEADER,
+        "自测报告附件",
+        "03-数据统计分析_测试文档_工单自测报告附件",
+    ),
 }
 
 SECTION_LABELS = [
@@ -160,7 +165,7 @@ def header_col(hmap: dict[str, int], canonical_name: str) -> int | None:
 
 def load_ledger_programs(ledger_path: str | os.PathLike, service_dir: str):
     wb = openpyxl.load_workbook(ledger_path, data_only=True)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     merged, ranges = merged_maps(ws)
     headers = [text(ws.cell(1, c).value) for c in range(1, ws.max_column + 1)]
     hmap = {header: idx + 1 for idx, header in enumerate(headers) if header}

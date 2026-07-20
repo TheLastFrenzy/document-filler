@@ -22,6 +22,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image, ImageDraw, ImageFont
 
+from materials.shared.ledger_sheet import select_ledger_sheet
+
 
 DEFAULT_SERVICE_DIR = "N08-数据统计分析"
 LEDGER_XML_COL = "程序XML文本"
@@ -117,7 +119,7 @@ def merged_value_getter(ws):
 
 def load_ledger_rows(ledger_path: Path, service_dir: str) -> list[dict[str, str]]:
     wb = load_workbook(ledger_path, data_only=False)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
     get = merged_value_getter(ws)
     service_col = headers.index("服务目录") + 1

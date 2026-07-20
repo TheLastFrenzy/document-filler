@@ -31,7 +31,7 @@ def make_split_ledger(path: Path):
         "业务描述",
         "统计分析结果表清单",
         "程序XML文本",
-        "数据统计分析执行周期",
+        "执行周期",
         "数据更新要求",
         "数据量对后续运维的特殊要求",
     ]
@@ -144,6 +144,7 @@ class StatsRequirementSplitRowsTest(unittest.TestCase):
         self.assertEqual(groups[0]["报表统计次数"], "3")
         self.assertEqual(groups[0]["业务描述"], "新版工单描述")
         self.assertEqual(groups[0]["业务说明"], "新版工单描述")
+        self.assertEqual(groups[0]["数据统计分析执行周期"], "按日更新")
         self.assertEqual(groups[0]["统计分析结果表清单"], "结果表一 RESULT_ONE\n结果表二 RESULT_TWO\n结果表三 RESULT_THREE")
 
     def test_loads_relation_descriptions_by_result_table_name(self):

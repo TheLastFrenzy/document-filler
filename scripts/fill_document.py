@@ -48,6 +48,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from materials.registry import get_material_spec, load_material_builder, registered_material_types
+from materials.shared.ledger_sheet import select_ledger_sheet
 
 HEADER_BG = "F1F1F1"
 
@@ -91,6 +92,7 @@ def resolve_output_path(output_path, material_type):
 # ══════════════════════════════════════════════════════════════
 
 _STATS_RESULT_BUILDER = None
+DATA_REPORT_CATALOG_COL = "源表对应目录代码清单"
 
 LEDGER_COLUMN_ALIASES = {
     "工单内容": ("工单内容", "工单标题"),
@@ -98,6 +100,17 @@ LEDGER_COLUMN_ALIASES = {
     "业务说明": ("业务说明", "工单描述"),
     "业务描述": ("业务描述", "工单描述", "业务说明"),
     "统计分析结果表清单": ("统计分析结果表清单", "结果表清单"),
+    DATA_REPORT_CATALOG_COL: (
+        DATA_REPORT_CATALOG_COL,
+        "02-数据报表_设计文档-数据来源库表清单对应数据目录代码",
+    ),
+    "交付物": ("附件", "交付物", "交付附件"),
+    "自测报告附件": (
+        "附件",
+        "自测报告附件",
+        "03-数据统计分析_测试文档_工单自测报告附件",
+    ),
+    "数据统计分析执行周期": ("执行周期", "数据统计分析执行周期"),
 }
 
 
@@ -115,8 +128,6 @@ def ledger_header_index(headers, canonical_name):
 def normalize_ledger_record(record):
     normalized = dict(record)
     for canonical_name, aliases in LEDGER_COLUMN_ALIASES.items():
-        if str(normalized.get(canonical_name, "") or "").strip():
-            continue
         for alias in aliases:
             value = str(normalized.get(alias, "") or "").strip()
             if value:
@@ -128,7 +139,7 @@ def normalize_ledger_record(record):
 
 def read_excel(excel_path, service_dir):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     rows = []
     for r in range(2, ws.max_row + 1):
@@ -150,11 +161,23 @@ def read_excel(excel_path, service_dir):
 def excel_column_numbers(excel_path, header_names):
     try:
         wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
-        ws = wb.active
+        ws = select_ledger_sheet(wb)
         headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
         wanted = set(header_names)
         wb.close()
         return [idx + 1 for idx, header in enumerate(headers) if header in wanted]
+    except Exception:
+        return []
+
+
+def excel_column_number(excel_path, canonical_name):
+    try:
+        wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+        ws = select_ledger_sheet(wb)
+        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        index = ledger_header_index(headers, canonical_name)
+        wb.close()
+        return [index + 1] if index >= 0 else []
     except Exception:
         return []
 
@@ -240,7 +263,6 @@ def mp(text, style_id, indent=None, word_wrap=False):
     return p
 
 
-DATA_REPORT_CATALOG_COL = "02-数据报表_设计文档-数据来源库表清单对应数据目录代码"
 DATA_REPORT_TEMPLATE_FRAGMENTS = (
     "围绕业务说明中列明的统计口径和数据目录",
     "报表需覆盖主要统计对象、关键字段、数据量、更新时间、空值情况和样例数据等内容",
@@ -841,7 +863,7 @@ def _is_template_like(text):
 
 
 def normalize_data_report_text_fields(row, catalog_context=None):
-    normalized = dict(row)
+    normalized = normalize_ledger_record(row)
     catalog_codes = extract_data_report_codes(
         normalized.get(DATA_REPORT_CATALOG_COL, ""),
         include_plain_numbers=False,
@@ -1513,7 +1535,7 @@ def build_attachment_previews(excel_path, row_numbers):
             excel_path,
             row_numbers,
             temp / "attachments",
-            excel_column_numbers(excel_path, ["交付物"]) or None,
+            excel_column_number(excel_path, "交付物") or None,
         )
         previews = {}
         for row, files in attachments.items():
@@ -1535,7 +1557,7 @@ def attach_delivery_files_for_requirement(excel_path, data_rows):
                 continue
     if not row_nums:
         return data_rows
-    deliverable_cols = excel_column_numbers(excel_path, ["交付物"])
+    deliverable_cols = excel_column_number(excel_path, "交付物")
     if not deliverable_cols:
         return data_rows
     with tempfile.TemporaryDirectory(prefix="document_filler_requirement_attachments_") as temp_dir:
@@ -1863,7 +1885,7 @@ def merged_value_getter(ws):
 
 def read_stats_requirement_groups(excel_path, service_dir):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     if "服务目录" not in headers:
         raise ValueError("台账清单缺少「服务目录」列")
@@ -1904,7 +1926,7 @@ def read_stats_requirement_groups(excel_path, service_dir):
 
 def read_data_report_design_groups(excel_path, service_dir):
     wb = openpyxl.load_workbook(excel_path, data_only=False)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     if "服务目录" not in headers:
         raise ValueError("台账清单缺少「服务目录」列")
@@ -2544,7 +2566,7 @@ def extract_images_from_excel(excel_path):
     except Exception:
         all_images = []
     wb_img = openpyxl.load_workbook(excel_path)
-    ws_img = wb_img.active
+    ws_img = select_ledger_sheet(wb_img)
     positions = sorted([
         (r, c) for r in range(2, ws_img.max_row + 1)
         for c in range(1, ws_img.max_column + 1)
@@ -2590,7 +2612,7 @@ def extract_images_via_cellimages(excel_path):
 def match_images_to_cells(excel_path, img_bytes_by_name, img_cols, row_numbers):
     """Match DISPIMG formulas to images by name for given row numbers."""
     wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=False)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     result = {}
     for r in row_numbers:
@@ -2612,7 +2634,7 @@ def match_images_to_cells(excel_path, img_bytes_by_name, img_cols, row_numbers):
 def merged_source_rows_for_primary_rows(excel_path, primary_rows):
     """Map each selected row to continuation rows in its merged service cell."""
     wb = openpyxl.load_workbook(excel_path, data_only=False)
-    ws = wb.active
+    ws = select_ledger_sheet(wb)
     headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
     service_col = headers.index("服务目录") + 1
     grouped = {row: [row] for row in primary_rows}
@@ -2678,7 +2700,7 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
     if attachment_previews:
         print(f"附件截图: {len(attachment_previews)} 张")
 
-    deliverable_cols = excel_column_numbers(excel_path, ["交付物"]) or None
+    deliverable_cols = excel_column_number(excel_path, "交付物") or None
     with tempfile.TemporaryDirectory(prefix="document_filler_indicator_attachments_") as temp_dir:
         attachments = extract_deliverable_attachments(excel_path, row_nums, Path(temp_dir) / "attachments", deliverable_cols)
         for rd in data_rows:
@@ -2708,7 +2730,7 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
 
     # Collect all directory codes
     all_codes = set()
-    code_col = "02-数据报表_设计文档-数据来源库表清单对应数据目录代码"
+    code_col = DATA_REPORT_CATALOG_COL
     for rd in data_rows:
         codes_str = rd.get(code_col, "")
         rd["_codes"] = [c.strip() for c in codes_str.split("\n") if c.strip()]
