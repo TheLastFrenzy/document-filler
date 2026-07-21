@@ -2648,13 +2648,17 @@ def load_catalog_data(catalog_path, all_codes):
     """Load resource info and field data from catalog Excel."""
     ensure_module("pandas")
     import pandas as pd
+
+    def catalog_text(value):
+        return "" if pd.isna(value) else str(value).strip()
+
     df_r = pd.read_excel(catalog_path, sheet_name="关联资源信息")
     df_r["数据目录代码"] = df_r["数据目录代码"].astype(str).str.strip()
     rmap = {}
     for _, r in df_r[df_r["数据目录代码"].isin(all_codes)].iterrows():
         rmap[r["数据目录代码"]] = {
-            "资源名称": str(r.get("资源名称", "")).strip(),
-            "资源编码": str(r.get("资源编码", "")).strip()
+            "资源名称": catalog_text(r.get("资源名称", "")),
+            "资源编码": catalog_text(r.get("资源编码", ""))
         }
     df_i = pd.read_excel(catalog_path, sheet_name="数据项")
     df_i["数据目录代码"] = df_i["数据目录代码"].astype(str).str.strip()
@@ -2793,8 +2797,8 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
                 res = rmap.get(code, {})
                 rn = res.get("资源名称", "")
                 rc = res.get("资源编码", "")
-                h4_title = rc if rc else code
-                table_title = f"{rn} {rc}" if rn and rc else code
+                h4_title = rn or rc or code
+                table_title = " ".join(part for part in (rc, rn) if part) or code
                 body.append(mp(h4_title, S["H4"]))
                 fs = fmap.get(code, [])
                 if fs:
@@ -2809,13 +2813,6 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
             body.append(mp("", S["NL"]))
         else:
             body.append(mp(rd.get("数据处理逻辑", ""), S["BT"], 480))
-
-        body.append(mp("报表指标设计", S["H3"]))
-        body.append(mk_indicator_table(build_data_report_indicator_rows(
-            rd.get("_programs", []),
-            rd.get("_attachment_names", []),
-            work_order_title_file_name(rd),
-        )))
 
     # Insert images
     h3s = [(i, p) for i, p in enumerate(doc.paragraphs) if p.style.name == "Heading 3"]

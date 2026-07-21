@@ -9,6 +9,7 @@ from unittest import mock
 
 import openpyxl
 from PIL import Image, ImageDraw
+from docx import Document
 from docx.oxml.ns import qn
 
 
@@ -584,6 +585,70 @@ class DataReportRegressionTest(unittest.TestCase):
         self.assertEqual(groups[0]["报表统计次数"], "2")
         self.assertEqual(groups[0]["业务说明"], "新版工单描述")
         self.assertEqual(groups[0]["统计分析结果表清单"], "程序甲 A1\n程序乙 A2")
+
+    def test_design_doc_matches_new_source_section_structure_and_keeps_attachment_names(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            ledger = temp_path / "ledger.xlsx"
+            template = temp_path / "template.docx"
+            catalog = temp_path / "catalog.xlsx"
+            output = temp_path / "output.docx"
+
+            ledger_wb = openpyxl.Workbook()
+            ledger_ws = ledger_wb.active
+            ledger_ws.title = "台账清单"
+            ledger_ws.append(["服务目录", "附件"])
+            ledger_ws.append(["N08-数据报表服务", ""])
+            ledger_wb.save(ledger)
+
+            catalog_wb = openpyxl.Workbook()
+            resource_ws = catalog_wb.active
+            resource_ws.title = "关联资源信息"
+            resource_ws.append(["数据目录代码", "资源名称", "资源编码"])
+            resource_ws.append(["DIR001", "客户基本信息", "ODS_CUSTOMER"])
+            resource_ws.append(["DIR002", "", "ODS_ORDER"])
+            item_ws = catalog_wb.create_sheet("数据项")
+            item_ws.append(["数据目录代码", "数据项名称", "英文名称", "数据类型", "字段描述"])
+            item_ws.append(["DIR001", "客户姓名", "CUSTOMER_NAME", "VARCHAR", "姓名"])
+            item_ws.append(["DIR002", "订单编号", "ORDER_ID", "VARCHAR", "编号"])
+            item_ws.append(["DIR003", "来源标识", "SOURCE_ID", "VARCHAR", "标识"])
+            catalog_wb.save(catalog)
+
+            template_doc = Document()
+            template_doc.add_heading("数据报表设计", level=1)
+            template_doc.save(template)
+
+            rows = [{
+                "_row": 2,
+                "_row_numbers": [2],
+                "工单内容": "客户订单报表",
+                "业务说明": "生成客户订单报表。",
+                NEW_CATALOG_COL: "DIR001\nDIR002\nDIR003",
+                "数据处理逻辑": "按客户汇总订单。",
+            }]
+
+            with mock.patch.object(module, "extract_images_via_cellimages", return_value={}):
+                with mock.patch.object(module, "match_images_to_cells", return_value={}):
+                    with mock.patch.object(module, "build_attachment_previews", return_value={}):
+                        with mock.patch.object(
+                            module,
+                            "extract_deliverable_attachments",
+                            return_value={2: [Path("客户订单报表.xlsx")]},
+                        ):
+                            with mock.patch.object(module, "update_toc_via_com"):
+                                module.fill_design_doc_full(ledger, rows, template, output, catalog)
+
+            generated = Document(output)
+
+        heading4_texts = [p.text for p in generated.paragraphs if p.style.name == "Heading 4"]
+        self.assertEqual(heading4_texts, ["客户基本信息", "ODS_ORDER", "DIR003"])
+        self.assertEqual(
+            [table.cell(0, 0).text for table in generated.tables[1:]],
+            ["ODS_CUSTOMER 客户基本信息", "ODS_ORDER", "DIR003"],
+        )
+        self.assertNotIn("报表指标设计", [p.text for p in generated.paragraphs])
+        self.assertEqual(rows[0]["_attachment_names"], ["客户订单报表"])
 
     def test_extracts_indicator_field_comments_from_program_xml(self):
         module = load_fill_document_module()
