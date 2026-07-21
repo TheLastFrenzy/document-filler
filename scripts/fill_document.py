@@ -1679,6 +1679,7 @@ def make_table_oxml(headers, rows_data, col_widths=None):
     hdr = OxmlElement("w:tr")
     for idx, h in enumerate(headers):
         hdr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG, width=col_widths[idx]))
+    _mark_repeating_table_header(hdr)
     tbl.append(hdr)
     for rd in rows_data:
         tr = OxmlElement("w:tr")
@@ -2114,10 +2115,12 @@ def make_biz_table(header_text, rows_data):
     tg.append(OxmlElement("w:gridCol")); tg[-1].set(qn("w:w"), "8100"); tbl.append(tg)
     tr0 = OxmlElement("w:tr")
     tr0.append(make_cell_oxml(header_text, grid_span=2, bold=True, bg=HEADER_BG, align="center"))
+    _mark_repeating_table_header(tr0)
     tbl.append(tr0)
     tr1 = OxmlElement("w:tr")
     tr1.append(make_cell_oxml("步骤", bold=True, bg=HEADER_BG))
     tr1.append(make_cell_oxml("说明", bold=True, bg=HEADER_BG))
+    _mark_repeating_table_header(tr1)
     tbl.append(tr1)
     for sn, st in rows_data:
         tr = OxmlElement("w:tr")

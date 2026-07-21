@@ -336,6 +336,10 @@ class StatsDesignDispatchTest(unittest.TestCase):
                 ["序号", "需求单编号", "工单编号", "程序名称"],
             )
             self.assertEqual([cell.text for cell in source_table.rows[1].cells], ["1", "REQ-1", "WO-1", "结果表一"])
+            self.assertIsNotNone(doc.tables[1].rows[0]._tr.find(".//" + qn("w:tblHeader")))
+            self.assertIsNotNone(doc.tables[2].rows[0]._tr.find(".//" + qn("w:tblHeader")))
+            self.assertIsNotNone(doc.tables[3].rows[0]._tr.find(".//" + qn("w:tblHeader")))
+            self.assertIsNotNone(doc.tables[3].rows[1]._tr.find(".//" + qn("w:tblHeader")))
             self.assertGreaterEqual(len(doc.tables), 10)
 
     def test_stats_design_rebuilds_legacy_five_column_source_table(self):
