@@ -207,8 +207,6 @@ def _format_mapping_table_prototypes(table, has_total):
     header = table.rows[0]
     header.height = Pt(20)
     header.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
-    tr_properties = header._tr.get_or_add_trPr()
-    tr_properties.append(OxmlElement("w:tblHeader"))
     for cell in header.cells:
         cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         paragraph = cell.paragraphs[0]

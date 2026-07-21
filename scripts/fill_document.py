@@ -3119,6 +3119,17 @@ def _clone_mapping_row(prototype, values):
     return row
 
 
+def _mark_repeating_table_header(row):
+    properties = row.find(qn("w:trPr"))
+    if properties is None:
+        properties = OxmlElement("w:trPr")
+        row.insert(0, properties)
+    if properties.find(qn("w:tblHeader")) is None:
+        header = OxmlElement("w:tblHeader")
+        header.set(qn("w:val"), "true")
+        properties.append(header)
+
+
 def rebuild_stats_mapping_table(table, headers, rows, column_widths, total=None):
     prototype_rows = list(table.findall(qn("w:tr")))
     if not prototype_rows:
@@ -3156,7 +3167,9 @@ def rebuild_stats_mapping_table(table, headers, rows, column_widths, total=None)
 
     for row in prototype_rows:
         table.remove(row)
-    table.append(_clone_mapping_row(header_prototype, headers))
+    header_row = _clone_mapping_row(header_prototype, headers)
+    _mark_repeating_table_header(header_row)
+    table.append(header_row)
     for values in rows:
         table.append(_clone_mapping_row(data_prototype, values))
     if total is not None:
@@ -3598,7 +3611,9 @@ def rebuild_stats_design_source_table(table, rows):
 
     for row in prototype_rows:
         table.remove(row)
-    table.append(_clone_stats_design_source_row(header_prototype, headers, source_indexes, column_widths))
+    header_row = _clone_stats_design_source_row(header_prototype, headers, source_indexes, column_widths)
+    _mark_repeating_table_header(header_row)
+    table.append(header_row)
     for values in rows:
         table.append(_clone_stats_design_source_row(data_prototype, values, source_indexes, column_widths))
 

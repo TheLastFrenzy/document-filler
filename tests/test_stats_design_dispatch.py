@@ -330,6 +330,7 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertFalse(any(p.style.name == "Heading 3" and p.text == "数据统计分析设计" for p in doc.paragraphs))
             source_table = doc.tables[0]
             self.assertEqual(len(source_table.columns), 4)
+            self.assertIsNotNone(source_table.rows[0]._tr.find(".//" + qn("w:tblHeader")))
             self.assertEqual(
                 [cell.text for cell in source_table.rows[0].cells],
                 ["序号", "需求单编号", "工单编号", "程序名称"],
