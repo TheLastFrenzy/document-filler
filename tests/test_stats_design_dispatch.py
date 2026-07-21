@@ -60,8 +60,8 @@ def make_design_template(path: Path):
     doc.add_heading("文档介绍", level=1)
     doc.add_heading("需求来源", level=2)
     doc.add_paragraph("服务周期内，共有0张需求单，0张工单涉及0次数据统计分析服务。具体需求单、工单和产出如下表：")
-    table = doc.add_table(rows=1, cols=5)
-    for idx, header in enumerate(["序号", "需求单编号", "工单编号", "工单名称", "程序名称"]):
+    table = doc.add_table(rows=1, cols=4)
+    for idx, header in enumerate(["序号", "需求单编号", "工单编号", "程序名称"]):
         table.rows[0].cells[idx].text = header
     doc.add_heading("数据统计分析设计", level=1)
     doc.add_heading("旧程序", level=2)
@@ -319,6 +319,18 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertIn("RESULT_THREE", full_text)
             self.assertNotIn("旧内容", full_text)
             self.assertEqual(len([p for p in doc.paragraphs if p.style.name == "Heading 2" and p.text.startswith("结果表")]), 3)
+            self.assertEqual(
+                len([p for p in doc.paragraphs if p.style.name == "Heading 1" and p.text == "数据统计分析设计"]),
+                1,
+            )
+            self.assertEqual(
+                len([p for p in doc.paragraphs if p.style.name == "Heading 3" and p.text == "数据结果表设计"]),
+                3,
+            )
+            self.assertFalse(any(p.style.name == "Heading 3" and p.text == "数据统计分析设计" for p in doc.paragraphs))
+            source_table = doc.tables[0]
+            self.assertEqual(len(source_table.columns), 4)
+            self.assertEqual([cell.text for cell in source_table.rows[1].cells], ["1", "REQ-1", "WO-1", "结果表一"])
             self.assertGreaterEqual(len(doc.tables), 10)
 
     def test_stats_design_logic_keeps_more_than_fifteen_steps(self):

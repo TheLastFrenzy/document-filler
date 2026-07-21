@@ -3589,8 +3589,8 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
             unique_reqs = len({item.get("需求单号", "") for item in programs if item.get("需求单号", "")})
             unique_orders = len({item.get("工单号", "") for item in programs if item.get("工单号", "")})
             desc.text = f"服务周期内，共有{unique_reqs}张需求单，{unique_orders}张工单涉及{len(programs)}次数据统计分析服务。具体需求单、工单和产出如下表："
-        if len(doc.tables) >= 3:
-            tbl = doc.tables[2]._tbl
+        tbl = find_table_under_heading(doc, source_heading)
+        if tbl is not None:
             for tr in tbl.findall(qn("w:tr"))[1:]:
                 tbl.remove(tr)
             tbl_pr = tbl.find(qn("w:tblPr"))
@@ -3606,8 +3606,7 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
                     str(idx),
                     item.get("需求单号", ""),
                     item.get("工单号", ""),
-                    item.get("工单内容", ""),
-                    item["result_en"],
+                    item["result_cn"],
                 ]:
                     tr.append(make_cell_oxml(xml_safe(value)))
                 tbl.append(tr)
@@ -3659,7 +3658,7 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
             ["500", "1350", "3400", "2450", "800", "1250"],
         ))
 
-        append_body_element(body, mp("数据统计分析设计", style["H3"]))
+        append_body_element(body, mp("数据结果表设计", style["H3"]))
         append_body_element(body, mp(xml_safe(f"{result_cn} {result_en}"), style["H4"]))
         fields = []
         for field in detail_map.get(result_en, []):
