@@ -10,6 +10,7 @@
 """
 
 import argparse, re, sys, os, subprocess, io, zipfile, tempfile, importlib.util, html, json, ntpath, shutil, hashlib
+from copy import deepcopy
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -3077,18 +3078,63 @@ def find_table_under_heading(doc, heading):
     )
 
 
+def _mapping_cell_grid_span(cell):
+    properties = cell.find(qn("w:tcPr"))
+    span = properties.find(qn("w:gridSpan")) if properties is not None else None
+    return int(span.get(qn("w:val"))) if span is not None else 1
+
+
+def _replace_mapping_cell_text(cell, value):
+    text_nodes = list(cell.iter(qn("w:t")))
+    text = xml_safe(str(value or ""))
+    if text_nodes:
+        text_nodes[0].text = text
+        text_nodes[0].set(qn("xml:space"), "preserve")
+        for text_node in text_nodes[1:]:
+            text_node.text = ""
+        return
+
+    paragraph = cell.find(qn("w:p"))
+    if paragraph is None:
+        paragraph = OxmlElement("w:p")
+        cell.append(paragraph)
+    run = paragraph.find(qn("w:r"))
+    if run is None:
+        run = OxmlElement("w:r")
+        paragraph.append(run)
+    text_node = OxmlElement("w:t")
+    text_node.text = text
+    text_node.set(qn("xml:space"), "preserve")
+    run.append(text_node)
+
+
+def _clone_mapping_row(prototype, values):
+    row = deepcopy(prototype)
+    logical_index = 0
+    for cell in row.findall(qn("w:tc")):
+        span = _mapping_cell_grid_span(cell)
+        value = values[logical_index] if logical_index < len(values) else ""
+        _replace_mapping_cell_text(cell, value)
+        logical_index += span
+    return row
+
+
 def rebuild_stats_mapping_table(table, headers, rows, column_widths, total=None):
-    for tr in table.findall(qn("w:tr")):
-        table.remove(tr)
+    prototype_rows = list(table.findall(qn("w:tr")))
+    if not prototype_rows:
+        raise ValueError("模板关联表格缺少原型行")
+    header_prototype = prototype_rows[0]
+    data_prototype = prototype_rows[1] if len(prototype_rows) > 1 else header_prototype
+    total_prototype = prototype_rows[-1] if total is not None and len(prototype_rows) > 2 else data_prototype
 
     tbl_pr = table.find(qn("w:tblPr"))
     if tbl_pr is None:
         tbl_pr = OxmlElement("w:tblPr")
         table.insert(0, tbl_pr)
-    for element_name in ("w:tblBorders", "w:tblStyle", "w:tblLayout"):
-        for element in tbl_pr.findall(qn(element_name)):
-            tbl_pr.remove(element)
-    add_solid_borders(tbl_pr)
+    for layout in tbl_pr.findall(qn("w:tblLayout")):
+        tbl_pr.remove(layout)
+    if tbl_pr.find(qn("w:tblBorders")) is None:
+        add_solid_borders(tbl_pr)
     layout = OxmlElement("w:tblLayout")
     layout.set(qn("w:type"), "fixed")
     tbl_pr.append(layout)
@@ -3108,22 +3154,13 @@ def rebuild_stats_mapping_table(table, headers, rows, column_widths, total=None)
         grid_column.set(qn("w:w"), str(width))
         grid.append(grid_column)
 
-    header_row = OxmlElement("w:tr")
-    for header in headers:
-        header_row.append(make_cell_oxml(header, bold=True, bg=HEADER_BG))
-    table.append(header_row)
+    for row in prototype_rows:
+        table.remove(row)
+    table.append(_clone_mapping_row(header_prototype, headers))
     for values in rows:
-        row = OxmlElement("w:tr")
-        for value in values:
-            row.append(make_cell_oxml(value))
-        table.append(row)
+        table.append(_clone_mapping_row(data_prototype, values))
     if total is not None:
-        total_row = OxmlElement("w:tr")
-        total_row.append(make_cell_oxml("合计", grid_span=2, bold=True))
-        total_row.append(make_cell_oxml(""))
-        total_row.append(make_cell_oxml(""))
-        total_row.append(make_cell_oxml(str(total), bold=True))
-        table.append(total_row)
+        table.append(_clone_mapping_row(total_prototype, ["合计", "", "", "", str(total)]))
 
 
 def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path=None):

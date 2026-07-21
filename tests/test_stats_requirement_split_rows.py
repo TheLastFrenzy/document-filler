@@ -6,6 +6,11 @@ from unittest import mock
 
 import openpyxl
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +180,10 @@ def make_new_requirement_template(path: Path, include_task_table: bool = True):
         ["序号", "对应需求单编号", "对应工单编号", "工单标题", "数据统计分析次数"],
     ):
         cell.text = value
+    first_table.style = "Table Grid"
+    first_table.add_row()
+    first_table.add_row()
+    _format_mapping_table_prototypes(first_table, has_total=True)
     doc.add_heading("工单与任务的对应关系", level=3)
     if include_task_table:
         second_table = doc.add_table(rows=1, cols=4)
@@ -183,12 +192,66 @@ def make_new_requirement_template(path: Path, include_task_table: bool = True):
             ["序号", "对应需求单编号", "对应工单编号", "任务中文名"],
         ):
             cell.text = value
+        second_table.style = "Table Grid"
+        second_table.add_row()
+        _format_mapping_table_prototypes(second_table, has_total=False)
     doc.add_heading("需求内容", level=1)
     doc.add_heading("旧工单", level=2)
     doc.add_paragraph("旧内容")
     doc.add_heading("其他要求", level=1)
     doc.add_paragraph("保持不变")
     doc.save(path)
+
+
+def _format_mapping_table_prototypes(table, has_total):
+    header = table.rows[0]
+    header.height = Pt(20)
+    header.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+    tr_properties = header._tr.get_or_add_trPr()
+    tr_properties.append(OxmlElement("w:tblHeader"))
+    for cell in header.cells:
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        paragraph = cell.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.runs[0]
+        run.bold = True
+        run.font.name = "Arial"
+        run.font.size = Pt(14)
+        run.font.color.rgb = RGBColor(192, 0, 0)
+
+    data = table.rows[1]
+    data.height = Pt(28)
+    data.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+    for index, cell in enumerate(data.cells):
+        cell.text = f"数据原型{index + 1}"
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        paragraph = cell.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = paragraph.runs[0]
+        run.italic = True
+        run.font.name = "Courier New"
+        run.font.size = Pt(11)
+        run.font.color.rgb = RGBColor(0, 102, 204)
+
+    if not has_total:
+        return
+    total = table.rows[2]
+    total.height = Pt(18)
+    total.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
+    total._tr.remove(total._tr.tc_lst[1])
+    grid_span = OxmlElement("w:gridSpan")
+    grid_span.set(qn("w:val"), "2")
+    total._tr.tc_lst[0].get_or_add_tcPr().append(grid_span)
+    for cell in total.cells:
+        cell.text = "合计原型"
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        paragraph = cell.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = paragraph.runs[0]
+        run.bold = True
+        run.font.name = "Times New Roman"
+        run.font.size = Pt(12)
+        run.font.color.rgb = RGBColor(0, 128, 0)
 
 
 def table_rows(table):
@@ -239,6 +302,39 @@ class StatsRequirementSplitRowsTest(unittest.TestCase):
                 ["3", "REQ-2", "WO-2", "任务中文名三"],
             ],
         )
+        source_table = generated.tables[1]
+        source_header = source_table.rows[0]
+        self.assertIsNotNone(source_header._tr.find(".//" + qn("w:tblHeader")))
+        self.assertEqual(source_table.style.name, "Table Grid")
+        self.assertEqual(source_header._tr.get_or_add_trPr().find(qn("w:trHeight")).get(qn("w:val")), "400")
+        self.assertEqual(source_header.cells[0].paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.CENTER)
+        self.assertTrue(source_header.cells[0].paragraphs[0].runs[0].bold)
+        self.assertEqual(source_header.cells[0].paragraphs[0].runs[0].font.name, "Arial")
+        self.assertEqual(source_header.cells[0].paragraphs[0].runs[0].font.size.pt, 14)
+        self.assertEqual(source_header.cells[0].paragraphs[0].runs[0].font.color.rgb, RGBColor(192, 0, 0))
+
+        source_data = source_table.rows[1]
+        self.assertEqual(source_data._tr.get_or_add_trPr().find(qn("w:trHeight")).get(qn("w:val")), "560")
+        self.assertEqual(source_data.cells[0].vertical_alignment, WD_CELL_VERTICAL_ALIGNMENT.CENTER)
+        self.assertEqual(source_data.cells[0].paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.LEFT)
+        self.assertTrue(source_data.cells[0].paragraphs[0].runs[0].italic)
+        self.assertEqual(source_data.cells[0].paragraphs[0].runs[0].font.name, "Courier New")
+        self.assertEqual(source_data.cells[0].paragraphs[0].runs[0].font.size.pt, 11)
+        self.assertEqual(source_data.cells[0].paragraphs[0].runs[0].font.color.rgb, RGBColor(0, 102, 204))
+
+        source_total = source_table.rows[-1]
+        self.assertEqual(source_total._tr.get_or_add_trPr().find(qn("w:trHeight")).get(qn("w:val")), "360")
+        self.assertEqual(source_total.cells[0].paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        self.assertTrue(source_total.cells[0].paragraphs[0].runs[0].bold)
+        self.assertEqual(source_total.cells[0].paragraphs[0].runs[0].font.name, "Times New Roman")
+        self.assertEqual(source_total.cells[0].paragraphs[0].runs[0].font.size.pt, 12)
+        self.assertEqual(source_total.cells[0].paragraphs[0].runs[0].font.color.rgb, RGBColor(0, 128, 0))
+
+        task_table = generated.tables[2]
+        self.assertIsNotNone(task_table.rows[0]._tr.find(".//" + qn("w:tblHeader")))
+        self.assertEqual(task_table.style.name, "Table Grid")
+        self.assertEqual(task_table.rows[1]._tr.get_or_add_trPr().find(qn("w:trHeight")).get(qn("w:val")), "560")
+        self.assertEqual(task_table.rows[1].cells[0].paragraphs[0].runs[0].font.name, "Courier New")
         paragraphs = [paragraph.text for paragraph in generated.paragraphs]
         self.assertIn("数据加工要求", paragraphs)
         self.assertNotIn("数据加工周期", paragraphs)
