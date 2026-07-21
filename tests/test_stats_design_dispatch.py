@@ -330,8 +330,51 @@ class StatsDesignDispatchTest(unittest.TestCase):
             self.assertFalse(any(p.style.name == "Heading 3" and p.text == "数据统计分析设计" for p in doc.paragraphs))
             source_table = doc.tables[0]
             self.assertEqual(len(source_table.columns), 4)
+            self.assertEqual(
+                [cell.text for cell in source_table.rows[0].cells],
+                ["序号", "需求单编号", "工单编号", "程序名称"],
+            )
             self.assertEqual([cell.text for cell in source_table.rows[1].cells], ["1", "REQ-1", "WO-1", "结果表一"])
             self.assertGreaterEqual(len(doc.tables), 10)
+
+    def test_stats_design_rebuilds_legacy_five_column_source_table(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "template.docx"
+            relation = temp / "04-数据统计分析_结果表及使用说明.xlsx"
+            catalog = temp / "catalog.xlsx"
+            output = temp / "out.docx"
+            make_split_ledger(ledger)
+            make_design_template(template)
+            make_usage_workbook(relation)
+            make_catalog(catalog)
+
+            template_doc = Document(template)
+            source_table = template_doc.tables[0]
+            source_table.add_column(1000000)
+            for index, value in enumerate(["序号", "需求单编号", "工单编号", "工单名称", "程序名称"]):
+                source_table.rows[0].cells[index].text = value
+            template_doc.save(template)
+
+            with mock.patch.object(module, "update_toc_via_com", lambda _path: None):
+                module.fill_document(
+                    excel_path=str(ledger),
+                    service_dir="N08-数据统计分析",
+                    material_type="02-数据统计分析_设计文档",
+                    template_path=str(template),
+                    output_path=str(output),
+                    catalog_path=str(catalog),
+                )
+
+            result_table = Document(output).tables[0]
+            self.assertEqual(len(result_table.columns), 4)
+            self.assertEqual(
+                [cell.text for cell in result_table.rows[0].cells],
+                ["序号", "需求单编号", "工单编号", "程序名称"],
+            )
+            self.assertEqual([cell.text for cell in result_table.rows[1].cells], ["1", "REQ-1", "WO-1", "结果表一"])
 
     def test_stats_design_logic_keeps_more_than_fifteen_steps(self):
         module = load_fill_document_module()

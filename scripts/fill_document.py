@@ -3538,6 +3538,71 @@ def first_non_empty(mapping, keys, default=""):
     return default
 
 
+def _clone_stats_design_source_row(prototype, values, source_indexes, column_widths):
+    row = deepcopy(prototype)
+    prototype_cells = list(row.findall(qn("w:tc")))
+    for cell in prototype_cells:
+        row.remove(cell)
+    if not prototype_cells:
+        prototype_cells = [make_cell_oxml("")]
+
+    for index, (value, width) in enumerate(zip(values, column_widths)):
+        source_index = source_indexes[index] if index < len(source_indexes) else index
+        source_index = min(source_index, len(prototype_cells) - 1)
+        cell = deepcopy(prototype_cells[source_index])
+        properties = cell.find(qn("w:tcPr"))
+        if properties is None:
+            properties = OxmlElement("w:tcPr")
+            cell.insert(0, properties)
+        for tag in ("w:gridSpan", "w:vMerge"):
+            for node in properties.findall(qn(tag)):
+                properties.remove(node)
+        cell_width = properties.find(qn("w:tcW"))
+        if cell_width is None:
+            cell_width = OxmlElement("w:tcW")
+            properties.insert(0, cell_width)
+        cell_width.set(qn("w:type"), "dxa")
+        cell_width.set(qn("w:w"), str(width))
+        _replace_mapping_cell_text(cell, value)
+        row.append(cell)
+    return row
+
+
+def rebuild_stats_design_source_table(table, rows):
+    headers = ["序号", "需求单编号", "工单编号", "程序名称"]
+    prototype_rows = list(table.findall(qn("w:tr")))
+    if not prototype_rows:
+        raise ValueError("统计分析设计模板的需求来源表缺少原型行")
+    header_prototype = prototype_rows[0]
+    data_prototype = prototype_rows[1] if len(prototype_rows) > 1 else header_prototype
+    header_cells = list(header_prototype.findall(qn("w:tc")))
+    source_indexes = [0, 1, 2, len(header_cells) - 1] if len(header_cells) >= 4 else list(range(4))
+
+    grid = table.find(qn("w:tblGrid"))
+    grid_columns = list(grid.findall(qn("w:gridCol"))) if grid is not None else []
+    if len(grid_columns) >= 4:
+        grid_indexes = [0, 1, 2, len(grid_columns) - 1]
+        column_widths = [grid_columns[index].get(qn("w:w")) or "2000" for index in grid_indexes]
+    else:
+        column_widths = ["700", "1778", "1920", "4000"]
+
+    if grid is None:
+        grid = OxmlElement("w:tblGrid")
+        table.insert(1, grid)
+    for column in list(grid):
+        grid.remove(column)
+    for width in column_widths:
+        column = OxmlElement("w:gridCol")
+        column.set(qn("w:w"), str(width))
+        grid.append(column)
+
+    for row in prototype_rows:
+        table.remove(row)
+    table.append(_clone_stats_design_source_row(header_prototype, headers, source_indexes, column_widths))
+    for values in rows:
+        table.append(_clone_stats_design_source_row(data_prototype, values, source_indexes, column_widths))
+
+
 def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, catalog_path, relation_path=None):
     """填充 02-数据统计分析_设计文档，只生成 Word 文档。"""
     if not catalog_path:
@@ -3590,26 +3655,13 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
             unique_orders = len({item.get("工单号", "") for item in programs if item.get("工单号", "")})
             desc.text = f"服务周期内，共有{unique_reqs}张需求单，{unique_orders}张工单涉及{len(programs)}次数据统计分析服务。具体需求单、工单和产出如下表："
         tbl = find_table_under_heading(doc, source_heading)
-        if tbl is not None:
-            for tr in tbl.findall(qn("w:tr"))[1:]:
-                tbl.remove(tr)
-            tbl_pr = tbl.find(qn("w:tblPr"))
-            if tbl_pr is None:
-                tbl_pr = OxmlElement("w:tblPr")
-                tbl.insert(0, tbl_pr)
-            for border in tbl_pr.findall(qn("w:tblBorders")):
-                tbl_pr.remove(border)
-            add_solid_borders(tbl_pr)
-            for idx, item in enumerate(programs, start=1):
-                tr = OxmlElement("w:tr")
-                for value in [
-                    str(idx),
-                    item.get("需求单号", ""),
-                    item.get("工单号", ""),
-                    item["result_cn"],
-                ]:
-                    tr.append(make_cell_oxml(xml_safe(value)))
-                tbl.append(tr)
+        rebuild_stats_design_source_table(
+            tbl,
+            [
+                [str(idx), item.get("需求单号", ""), item.get("工单号", ""), item["result_cn"]]
+                for idx, item in enumerate(programs, start=1)
+            ],
+        )
 
     remove_content_after_heading(body, design_h1)
 
