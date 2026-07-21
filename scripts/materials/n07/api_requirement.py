@@ -37,9 +37,21 @@ CHINESE_DESCRIPTION_HEADERS = (
     "字段中文名称",
     "中文名称",
     "数据项名称",
+    "数据项说明",
     "字段注释",
+    "字段说明",
     "说明",
     "备注",
+)
+PARAMETER_NAME_HEADERS = (
+    "参数名",
+    "参数项",
+    "参数",
+    "数据项",
+    "字段英文名",
+    "英文名称",
+    "字段名",
+    "字段名称",
 )
 LOW_PRIORITY_NAME_HEADERS = (
     "字段名称",
@@ -63,6 +75,7 @@ NON_DESCRIPTION_HEADERS = {
     "测试数据1",
     "结果数据",
 }
+NORMALIZED_PARAMETER_HEADERS = ["序号", "参数名", "名称"]
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,49 @@ def _preferred_parameter_description(headers, row):
     if len(cells) > 1 and cells[1]:
         return cells[1]
     return cells[0] if cells else ""
+
+
+def _cell(row, index):
+    if index is None or index >= len(row):
+        return ""
+    return str(row[index] or "").strip()
+
+
+def _header_index(headers, candidates):
+    normalized = [_header_key(header) for header in headers]
+    candidate_set = {_header_key(candidate) for candidate in candidates}
+    for index, value in enumerate(normalized):
+        if value in candidate_set:
+            return index
+    return None
+
+
+def _fallback_parameter_index(headers):
+    sequence_index = _header_index(headers, ["序号"])
+    if sequence_index == 0 and len(headers) > 1:
+        return 1
+    return 0
+
+
+def _parameter_name(headers, row):
+    index = _header_index(headers, PARAMETER_NAME_HEADERS)
+    value = _cell(row, index)
+    if value:
+        return value
+    fallback_index = _fallback_parameter_index(headers)
+    return _cell(row, fallback_index)
+
+
+def normalized_parameter_rows(groups):
+    rows = []
+    for group in groups:
+        for row in group.rows:
+            parameter_name = _parameter_name(group.headers, row)
+            description = _preferred_parameter_description(group.headers, row)
+            if not parameter_name and not description:
+                continue
+            rows.append([str(len(rows) + 1), parameter_name, description])
+    return rows
 
 
 def _parameter_descriptions(groups, limit=3):
@@ -491,33 +547,21 @@ def _build_api_section(orders, prototypes):
                 clone_paragraph_with_text(prototypes.update_frequency, "计划更新频率：无")
             )
             elements.append(clone_paragraph_with_text(prototypes.input_label, "接口输入参数："))
-            for group in interface.input_groups:
-                if group.label:
-                    elements.append(
-                        clone_paragraph_with_text(prototypes.input_label, f"{group.label}：")
-                    )
-                elements.append(
-                    clone_table_with_data(
-                        prototypes.input_parameter_table,
-                        group.headers,
-                        group.rows,
-                        group.column_widths or None,
-                    )
+            elements.append(
+                clone_table_with_data(
+                    prototypes.input_parameter_table,
+                    NORMALIZED_PARAMETER_HEADERS,
+                    normalized_parameter_rows(interface.input_groups),
                 )
+            )
             elements.append(clone_paragraph_with_text(prototypes.output_label, "接口输出参数："))
-            for group in interface.output_groups:
-                if group.label:
-                    elements.append(
-                        clone_paragraph_with_text(prototypes.output_label, f"{group.label}：")
-                    )
-                elements.append(
-                    clone_table_with_data(
-                        prototypes.output_parameter_table,
-                        group.headers,
-                        group.rows,
-                        group.column_widths or None,
-                    )
+            elements.append(
+                clone_table_with_data(
+                    prototypes.output_parameter_table,
+                    NORMALIZED_PARAMETER_HEADERS,
+                    normalized_parameter_rows(interface.output_groups),
                 )
+            )
     return elements
 
 

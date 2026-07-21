@@ -637,6 +637,42 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertGreater(widths[4], widths[0])
         self.assertIsNone(description_cell.find(".//" + qn("w:jc")))
 
+    def test_normalized_api_parameter_rows_use_three_columns_and_flatten_object_groups(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.api_requirement import normalized_parameter_rows
+        from materials.shared.ledger import ParameterGroup
+
+        rows = normalized_parameter_rows(
+            [
+                ParameterGroup(
+                    "请求体",
+                    ["参数", "参数说明", "是否必选", "类型"],
+                    [["idAuthData", "身份验证数据", "是", "Object"]],
+                ),
+                ParameterGroup(
+                    "IdAuthData",
+                    ["参数", "参数说明", "是否必选", "类型"],
+                    [["idType", "证件种类", "是", "String"], ["nation", "国家地区", "是", "String"]],
+                ),
+                ParameterGroup(
+                    "",
+                    ["数据项", "数据项说明", "备注"],
+                    [["zjhm", "多人证件号码串", "示例密文"]],
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                ["1", "idAuthData", "身份验证数据"],
+                ["2", "idType", "证件种类"],
+                ["3", "nation", "国家地区"],
+                ["4", "zjhm", "多人证件号码串"],
+            ],
+        )
+
     def test_build_api_requirement_document_replaces_dynamic_sections_and_preserves_static_content(self):
         if str(SCRIPTS) not in sys.path:
             sys.path.insert(0, str(SCRIPTS))
@@ -664,6 +700,11 @@ class ApiRequirementTest(unittest.TestCase):
 
             document = Document(output)
             text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+            parameter_tables = [
+                table
+                for table in document.tables
+                if [cell.text for cell in table.rows[0].cells] == ["序号", "参数名", "名称"]
+            ]
 
         self.assertIn("共提供3个API接口服务", text)
         self.assertIn("WO-1_市公安局-出入境证件身份认证-共享接口", text)
@@ -675,6 +716,14 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertIn("计划供数方式：API接口对外服务", text)
         self.assertNotIn("企业电子票据证件号码校验接口", text)
         self.assertNotIn("旧接口说明", text)
+        self.assertEqual(len(parameter_tables), 6)
+        self.assertTrue(
+            any(
+                [cell.text for cell in row.cells][1:] == ["idAuthData", "身份验证数据"]
+                for table in parameter_tables
+                for row in table.rows
+            )
+        )
 
     def test_build_api_data_model_document_replaces_42_section_and_preserves_static_content(self):
         if str(SCRIPTS) not in sys.path:
@@ -702,23 +751,28 @@ class ApiRequirementTest(unittest.TestCase):
 
             document = Document(output)
             text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+            parameter_tables = [
+                table
+                for table in document.tables
+                if [cell.text for cell in table.rows[0].cells] == ["序号", "参数名", "名称"]
+            ]
 
         self.assertIn("市公安局-出入境证件身份认证-共享接口", text)
         self.assertIn("境外人员获取令牌接口", text)
         self.assertIn("境外人员身份认证申请接口", text)
         self.assertIn("境外人员身份认证请求接口", text)
-        self.assertIn("请求头：", text)
-        self.assertIn("请求体：", text)
         self.assertIn("STATIC_COMPONENT_MARKER", text)
         self.assertNotIn("旧工单标题", text)
         self.assertNotIn("旧接口", text)
+        self.assertNotIn("请求头：", text)
+        self.assertNotIn("请求体：", text)
 
+        self.assertEqual(len(parameter_tables), 6)
         self.assertTrue(
             any(
-                len(table.columns) == 4
-                and [cell.text for cell in table.rows[0].cells]
-                == ["参数", "参数说明", "是否必选", "类型"]
-                for table in document.tables
+                [cell.text for cell in row.cells] == ["2", "custNum", "业务站点号"]
+                for table in parameter_tables
+                for row in table.rows
             )
         )
 
@@ -877,11 +931,11 @@ class ApiRequirementTest(unittest.TestCase):
         self.assertEqual(document.tables[0].rows[1].cells[3].text, "上海市大数据中心")
         self.assertEqual(
             [cell.text for cell in document.tables[1].rows[0].cells],
-            ["序号", "参数项", "名称", "测试数据1"],
+            ["序号", "参数名", "名称"],
         )
         self.assertEqual(
             [cell.text for cell in document.tables[2].rows[0].cells],
-            ["序号", "参数项", "名称", "结果数据"],
+            ["序号", "参数名", "名称"],
         )
         output_layout = table_layout_signature(document.tables[2])
         for input_index in (1, 3, 5):
@@ -979,18 +1033,14 @@ class ApiRequirementTest(unittest.TestCase):
                         xml_or_none(expected_cell.paragraphs[0].runs[0]._r.rPr),
                     )
 
-            four_column_table = next(
+            parameter_tables = [
                 table
                 for table in output.tables
-                if len(table.columns) == 4
-                and "类型" in [cell.text for cell in table.rows[0].cells]
-            )
-            widths = [
-                int(column.get(qn("w:w")))
-                for column in four_column_table._tbl.tblGrid.gridCol_lst
+                if [cell.text for cell in table.rows[0].cells] == ["序号", "参数名", "名称"]
             ]
-            self.assertGreater(widths[1], widths[0])
-            self.assertGreater(widths[1], widths[2])
+            self.assertTrue(parameter_tables)
+            for table in parameter_tables:
+                self.assertEqual(len(table.columns), 3)
 
     def test_business_scene_accepts_a_single_template_paragraph(self):
         if str(SCRIPTS) not in sys.path:
