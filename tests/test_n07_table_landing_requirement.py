@@ -330,6 +330,39 @@ def make_requirement_template(path):
     return path
 
 
+def make_requirement_list_template(path):
+    document = Document()
+    document.add_heading("需求文档", level=1)
+    document.add_heading("业务场景", level=2)
+    document.add_paragraph("保留模板中的业务场景说明。")
+    document.add_heading("需求说明", level=2)
+    document.add_paragraph("保留模板中的需求说明。")
+    document.add_heading("需求清单", level=2)
+    document.add_paragraph(
+        "在本服务周期（2024年08月-2025年07月）内，共完成0个落地下发，涉及0个需求单、0个工单。"
+    )
+    list_table = document.add_table(rows=2, cols=5)
+    for index, value in enumerate(["序号", "对应需求单编号", "对应工单编号", "业务需求内容", "次数"]):
+        list_table.rows[0].cells[index].text = value
+    for index, value in enumerate(["1", "REQ-OLD", "WO-OLD", "旧业务需求", "1"]):
+        list_table.rows[1].cells[index].text = value
+    document.save(path)
+    return path
+
+
+def make_requirement_summary_ledger(path):
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["服务目录", "需求单号", "工单号", "工单标题", "程序数"])
+    sheet.append(["N07-库表落地方式", "REQ-1", "WO-1", "工单一", 2])
+    sheet.append(["N07-库表落地方式", "REQ-1", "WO-2", "工单二", 1])
+    sheet.append([None, None, None, None, None])
+    for column in "ABCDE":
+        sheet.merge_cells(f"{column}3:{column}4")
+    workbook.save(path)
+    return path
+
+
 def make_design_template(path):
     document = Document()
     document.add_heading("数据模型设计", level=1)
@@ -517,6 +550,43 @@ class N07TableLandingRequirementTest(unittest.TestCase):
         self.assertEqual(first_detail[1], ["1", "DB_ONE", "TABLE_ONE", "前置机A", "PRE_SRC_ONE", "业务一"])
         self.assertEqual(second_detail[1], ["1", "DB_TWO", "TABLE_TWO", "前置机B", "PRE_SRC_TWO_A", "业务二"])
         self.assertEqual(second_detail[2], ["2", "DB_THREE", "TABLE_THREE", "前置机B", "PRE_SRC_TWO_B", "业务三"])
+
+    def test_build_table_landing_requirement_document_fills_redesigned_requirement_list(self):
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        from materials.n07.table_landing_requirement import build_table_landing_requirement_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = make_requirement_summary_ledger(temp / "ledger.xlsx")
+            template = make_requirement_list_template(temp / "template.docx")
+            output = temp / "out.docx"
+
+            result = build_table_landing_requirement_document(
+                excel_path=str(ledger),
+                service_dir="N07-库表落地方式",
+                template_path=str(template),
+                output_path=str(output),
+            )
+
+            document = Document(result)
+
+        paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        self.assertIn("保留模板中的业务场景说明。", paragraphs)
+        self.assertIn(
+            "在本服务周期（2025年08月-2026年07月）内，共完成3个落地下发，涉及1个需求单、2个工单。",
+            paragraphs,
+        )
+        self.assertNotIn(
+            "在本服务周期（2024年08月-2025年07月）内，共完成0个落地下发，涉及0个需求单、0个工单。",
+            paragraphs,
+        )
+
+        rows = [[cell.text.strip() for cell in row.cells] for row in document.tables[0].rows]
+        self.assertEqual(rows[0], ["序号", "对应需求单编号", "对应工单编号", "业务需求内容", "次数"])
+        self.assertEqual(rows[1], ["1", "REQ-1", "WO-1", "工单一", "2"])
+        self.assertEqual(rows[2], ["2", "REQ-1", "WO-2", "工单二", "1"])
+        self.assertEqual(len(rows), 3)
 
     def test_registration_uses_public_design_filename(self):
         module = load_fill_document_module()

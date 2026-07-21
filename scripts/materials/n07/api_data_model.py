@@ -5,7 +5,11 @@ from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
 
-from materials.n07.api_requirement import parse_api_report
+from materials.n07.api_requirement import (
+    NORMALIZED_PARAMETER_HEADERS,
+    normalized_parameter_rows,
+    parse_api_report,
+)
 from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import read_api_work_orders
 from materials.shared.word_sections import (
@@ -25,7 +29,6 @@ class ApiDataModelPrototypes:
     interface_heading: object
     input_heading: object
     output_heading: object
-    group_label: object
     input_parameter_table: object
     output_parameter_table: object
 
@@ -59,27 +62,6 @@ def _first_table_after(elements, paragraph):
     return next((item for item in elements[start:] if item.tag == qn("w:tbl")), None)
 
 
-def _body_label_prototype(document):
-    seen_body = False
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        if paragraph.style.name == "Heading 1":
-            seen_body = True
-            continue
-        if seen_body and paragraph.style.name == "Normal":
-            return paragraph._p
-    return next(
-        (
-            paragraph._p
-            for paragraph in document.paragraphs
-            if paragraph.text.strip() and paragraph.style.name == "Normal"
-        ),
-        None,
-    )
-
-
 def _capture_template_prototypes(document, section_heading, next_heading):
     elements = elements_between(section_heading._p, next_heading._p)
     heading_3_style = document.styles["Heading 3"].style_id
@@ -96,7 +78,6 @@ def _capture_template_prototypes(document, section_heading, next_heading):
         interface_heading=_require_prototype(interface_heading, "接口中文名标题"),
         input_heading=_require_prototype(input_heading, "接口入参配置表标题"),
         output_heading=_require_prototype(output_heading, "接口出参配置表标题"),
-        group_label=_require_prototype(_body_label_prototype(document), "参数分组标签"),
         input_parameter_table=_require_prototype(
             _first_table_after(elements, input_heading), "接口入参配置表"
         ),
@@ -117,31 +98,23 @@ def _build_interface_section(orders, prototypes):
             elements.append(
                 clone_paragraph_with_text(prototypes.input_heading, "接口入参配置表")
             )
-            for group in interface.input_groups:
-                if group.label:
-                    elements.append(clone_paragraph_with_text(prototypes.group_label, f"{group.label}："))
-                elements.append(
-                    clone_table_with_data(
-                        prototypes.input_parameter_table,
-                        group.headers,
-                        group.rows,
-                        group.column_widths or None,
-                    )
+            elements.append(
+                clone_table_with_data(
+                    prototypes.input_parameter_table,
+                    NORMALIZED_PARAMETER_HEADERS,
+                    normalized_parameter_rows(interface.input_groups),
                 )
+            )
             elements.append(
                 clone_paragraph_with_text(prototypes.output_heading, "接口出参配置表")
             )
-            for group in interface.output_groups:
-                if group.label:
-                    elements.append(clone_paragraph_with_text(prototypes.group_label, f"{group.label}："))
-                elements.append(
-                    clone_table_with_data(
-                        prototypes.output_parameter_table,
-                        group.headers,
-                        group.rows,
-                        group.column_widths or None,
-                    )
+            elements.append(
+                clone_table_with_data(
+                    prototypes.output_parameter_table,
+                    NORMALIZED_PARAMETER_HEADERS,
+                    normalized_parameter_rows(interface.output_groups),
                 )
+            )
     return elements
 
 

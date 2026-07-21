@@ -16,7 +16,12 @@ from materials.n07.api_code_doc import (
     _iter_docx_blocks,
     _safe_name,
 )
-from materials.n07.api_requirement import _normalize_heading, parse_api_report
+from materials.n07.api_requirement import (
+    NORMALIZED_PARAMETER_HEADERS,
+    _normalize_heading,
+    normalized_parameter_rows,
+    parse_api_report,
+)
 from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import read_api_work_orders
 from materials.shared.office_word import (
@@ -206,98 +211,6 @@ def _build_list_table(orders, prototypes):
     )
 
 
-def _header_index(headers, candidates):
-    normalized = [_normalize_heading(header) for header in headers]
-    candidate_set = {_normalize_heading(candidate) for candidate in candidates}
-    for index, value in enumerate(normalized):
-        if value in candidate_set:
-            return index
-    return None
-
-
-def _cell(row, index):
-    if index is None or index >= len(row):
-        return ""
-    return str(row[index] or "").strip()
-
-
-def _first_nonempty_by_header(headers, row, candidates):
-    index = _header_index(headers, candidates)
-    return _cell(row, index), index
-
-
-def _fallback_parameter_index(headers):
-    sequence_index = _header_index(headers, ["序号"])
-    if sequence_index == 0 and len(headers) > 1:
-        return 1
-    return 0
-
-
-def _detail_value(headers, row, used_indexes, preferred_headers):
-    value, index = _first_nonempty_by_header(headers, row, preferred_headers)
-    if value:
-        return value, index
-    parts = []
-    for column_index, header in enumerate(headers):
-        if column_index in used_indexes:
-            continue
-        cell = _cell(row, column_index)
-        if cell:
-            label = str(header or "").strip()
-            parts.append(f"{label}：{cell}" if label else cell)
-    return "；".join(parts), None
-
-
-def _normalize_parameter_row(index, group_label, headers, row, detail_headers):
-    sequence_value, sequence_index = _first_nonempty_by_header(headers, row, ["序号"])
-    parameter_value, parameter_index = _first_nonempty_by_header(
-        headers,
-        row,
-        ["参数项", "参数", "字段英文名", "字段名"],
-    )
-    if not parameter_value:
-        parameter_index = _fallback_parameter_index(headers)
-        parameter_value = _cell(row, parameter_index)
-    name_value, name_index = _first_nonempty_by_header(
-        headers,
-        row,
-        ["名称", "参数说明", "说明", "字段中文名", "字段说明"],
-    )
-    if not name_value:
-        for candidate_index, candidate in enumerate(row):
-            if candidate_index not in {sequence_index, parameter_index} and str(candidate or "").strip():
-                name_index = candidate_index
-                name_value = str(candidate or "").strip()
-                break
-    detail_value, _ = _detail_value(
-        headers,
-        row,
-        {sequence_index, parameter_index, name_index},
-        detail_headers,
-    )
-    if group_label and parameter_value:
-        parameter_value = f"{group_label}.{parameter_value}"
-    elif group_label:
-        parameter_value = group_label
-    return [sequence_value or str(index), parameter_value, name_value, detail_value]
-
-
-def _parameter_rows(groups, detail_headers):
-    rows = []
-    for group in groups:
-        for row in group.rows:
-            rows.append(
-                _normalize_parameter_row(
-                    len(rows) + 1,
-                    group.label,
-                    group.headers,
-                    row,
-                    detail_headers,
-                )
-            )
-    return rows
-
-
 def _image_paragraph_element(document, prototype, image_path):
     paragraph = document.add_paragraph()
     element = paragraph._p
@@ -382,8 +295,8 @@ def _build_content_elements(document, orders, report_images_by_order, prototypes
             elements.append(clone_paragraph_with_text(prototypes.input_heading, "输入参数"))
             input_table = clone_table_with_data(
                 prototypes.input_parameter_table,
-                ["序号", "参数项", "名称", "测试数据1"],
-                _parameter_rows(interface.input_groups, ["测试数据1", "测试数据", "测试值", "示例值", "示例"]),
+                NORMALIZED_PARAMETER_HEADERS,
+                normalized_parameter_rows(interface.input_groups),
             )
             elements.append(
                 _match_parameter_table_layout(input_table, prototypes.output_parameter_table)
@@ -392,8 +305,8 @@ def _build_content_elements(document, orders, report_images_by_order, prototypes
             elements.append(
                 clone_table_with_data(
                     prototypes.output_parameter_table,
-                    ["序号", "参数项", "名称", "结果数据"],
-                    _parameter_rows(interface.output_groups, ["结果数据", "返回值", "示例值", "示例", "备注"]),
+                    NORMALIZED_PARAMETER_HEADERS,
+                    normalized_parameter_rows(interface.output_groups),
                 )
             )
             elements.append(clone_paragraph_with_text(prototypes.result_heading, "测试结果"))
