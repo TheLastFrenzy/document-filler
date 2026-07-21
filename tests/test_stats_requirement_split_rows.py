@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 import openpyxl
+from docx import Document
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +111,163 @@ def make_relation_workbook(path: Path):
     wb.save(path)
 
 
+def make_generation_ledger(path: Path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(
+        [
+            "服务目录",
+            "需求单号",
+            "工单号",
+            "工单标题",
+            "程序数",
+            "工单描述",
+            "结果表清单",
+            "执行周期",
+            "数据更新要求",
+            "数据量对后续运维的特殊要求",
+        ]
+    )
+    ws.append(
+        [
+            "N08-数据统计分析",
+            "REQ-1",
+            "WO-1",
+            "工单一",
+            "2",
+            "业务描述一",
+            "任务中文名一 RESULT_ONE",
+            "按日更新",
+            "每日更新",
+            "常规运维",
+        ]
+    )
+    ws.append([None, None, None, None, None, None, "任务中文名二 RESULT_TWO", None, None, None])
+    for column in ["A", "B", "C", "D", "E", "F", "H", "I", "J"]:
+        ws.merge_cells(f"{column}2:{column}3")
+    ws.append(
+        [
+            "N08-数据统计分析",
+            "REQ-2",
+            "WO-2",
+            "工单二",
+            "1",
+            "业务描述二",
+            "任务中文名三 RESULT_THREE",
+            "按月更新",
+            "每月更新",
+            "重点巡检",
+        ]
+    )
+    wb.save(path)
+
+
+def make_new_requirement_template(path: Path, include_task_table: bool = True):
+    doc = Document()
+    doc.add_heading("模板说明", level=1)
+    doc.add_table(rows=1, cols=1).cell(0, 0).text = "无关表格"
+    doc.add_heading("需求来源", level=2)
+    doc.add_paragraph("旧需求来源说明。")
+    doc.add_heading("需求单、工单产出对应列表", level=3)
+    first_table = doc.add_table(rows=1, cols=5)
+    for cell, value in zip(
+        first_table.rows[0].cells,
+        ["序号", "对应需求单编号", "对应工单编号", "工单标题", "数据统计分析次数"],
+    ):
+        cell.text = value
+    doc.add_heading("工单与任务的对应关系", level=3)
+    if include_task_table:
+        second_table = doc.add_table(rows=1, cols=4)
+        for cell, value in zip(
+            second_table.rows[0].cells,
+            ["序号", "对应需求单编号", "对应工单编号", "任务中文名"],
+        ):
+            cell.text = value
+    doc.add_heading("需求内容", level=1)
+    doc.add_heading("旧工单", level=2)
+    doc.add_paragraph("旧内容")
+    doc.add_heading("其他要求", level=1)
+    doc.add_paragraph("保持不变")
+    doc.save(path)
+
+
+def table_rows(table):
+    return [[cell.text for cell in row.cells] for row in table.rows]
+
+
 class StatsRequirementSplitRowsTest(unittest.TestCase):
+    def test_generates_both_new_template_mapping_tables_and_updated_work_order_content(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "template.docx"
+            output = temp / "output.docx"
+            relation = temp / "relation.xlsx"
+            make_generation_ledger(ledger)
+            make_new_requirement_template(template)
+            make_relation_workbook(relation)
+            groups = module.read_stats_requirement_groups(str(ledger), "N08-数据统计分析")
+
+            with mock.patch.object(module, "update_toc_via_com"):
+                module.fill_stats_requirement_doc(
+                    str(ledger), groups, str(template), str(output), str(relation)
+                )
+
+            generated = Document(output)
+
+        self.assertIn(
+            "服务周期内，共有2张需求单，2张工单涉及3次数据统计分析",
+            [paragraph.text for paragraph in generated.paragraphs],
+        )
+        self.assertNotIn("具体需求单、工单和产出如下表", "\n".join(p.text for p in generated.paragraphs))
+        self.assertEqual(
+            table_rows(generated.tables[1]),
+            [
+                ["序号", "对应需求单编号", "对应工单编号", "工单标题", "数据统计分析次数"],
+                ["1", "REQ-1", "WO-1", "工单一", "2"],
+                ["2", "REQ-2", "WO-2", "工单二", "1"],
+                ["合计", "合计", "", "", "3"],
+            ],
+        )
+        self.assertEqual(
+            table_rows(generated.tables[2]),
+            [
+                ["序号", "对应需求单编号", "对应工单编号", "任务中文名"],
+                ["1", "REQ-1", "WO-1", "任务中文名一"],
+                ["2", "REQ-1", "WO-1", "任务中文名二"],
+                ["3", "REQ-2", "WO-2", "任务中文名三"],
+            ],
+        )
+        paragraphs = [paragraph.text for paragraph in generated.paragraphs]
+        self.assertIn("数据加工要求", paragraphs)
+        self.assertNotIn("数据加工周期", paragraphs)
+        self.assertIn("数据统计分析执行周期：按日更新。", paragraphs)
+        self.assertIn("数据更新要求：每日更新。", paragraphs)
+        self.assertIn("对运维的工作要求：常规运维。", paragraphs)
+        self.assertNotIn("数据量对后续运维的特殊要求：常规运维。", paragraphs)
+
+    def test_missing_task_mapping_table_has_clear_error(self):
+        module = load_fill_document_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            ledger = temp / "ledger.xlsx"
+            template = temp / "template.docx"
+            output = temp / "output.docx"
+            relation = temp / "relation.xlsx"
+            make_generation_ledger(ledger)
+            make_new_requirement_template(template, include_task_table=False)
+            make_relation_workbook(relation)
+            groups = module.read_stats_requirement_groups(str(ledger), "N08-数据统计分析")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "工单与任务的对应关系.*关联表格",
+            ):
+                module.fill_stats_requirement_doc(
+                    str(ledger), groups, str(template), str(output), str(relation)
+                )
+
     def test_groups_split_result_rows_by_work_order(self):
         module = load_fill_document_module()
         with tempfile.TemporaryDirectory() as temp_dir:

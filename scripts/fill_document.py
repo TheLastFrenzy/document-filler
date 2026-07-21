@@ -3036,6 +3036,96 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
 # 01-数据统计分析_需求文档 Fill Logic
 # ================================================================================
 
+def find_required_body_heading(doc, style_name, heading_text):
+    for paragraph in doc.paragraphs:
+        if paragraph.style.name == style_name and paragraph.text.strip() == heading_text:
+            return paragraph
+    raise ValueError(f"模板中未找到 {style_name}「{heading_text}」")
+
+
+def find_body_paragraph_after(doc, heading, before_heading=None):
+    children = list(doc.element.body)
+    start = children.index(heading._element)
+    end = children.index(before_heading._element) if before_heading is not None else len(children)
+    paragraphs = {paragraph._element: paragraph for paragraph in doc.paragraphs}
+    for child in children[start + 1:end]:
+        paragraph = paragraphs.get(child)
+        if paragraph is not None and not paragraph.style.name.startswith("Heading"):
+            return paragraph
+    raise ValueError(f"模板 {heading.style.name}「{heading.text.strip()}」后未找到正文段落")
+
+
+def find_table_under_heading(doc, heading):
+    children = list(doc.element.body)
+    start = children.index(heading._element)
+    paragraphs = {paragraph._element: paragraph for paragraph in doc.paragraphs}
+    heading_level = int(heading.style.name.rsplit(" ", 1)[-1])
+    for child in children[start + 1:]:
+        if child.tag == qn("w:tbl"):
+            return child
+        paragraph = paragraphs.get(child)
+        if paragraph is None or not paragraph.style.name.startswith("Heading "):
+            continue
+        try:
+            level = int(paragraph.style.name.rsplit(" ", 1)[-1])
+        except ValueError:
+            continue
+        if level <= heading_level:
+            break
+    raise ValueError(
+        f"模板 {heading.style.name}「{heading.text.strip()}」后未找到关联表格"
+    )
+
+
+def rebuild_stats_mapping_table(table, headers, rows, column_widths, total=None):
+    for tr in table.findall(qn("w:tr")):
+        table.remove(tr)
+
+    tbl_pr = table.find(qn("w:tblPr"))
+    if tbl_pr is None:
+        tbl_pr = OxmlElement("w:tblPr")
+        table.insert(0, tbl_pr)
+    for element_name in ("w:tblBorders", "w:tblStyle", "w:tblLayout"):
+        for element in tbl_pr.findall(qn(element_name)):
+            tbl_pr.remove(element)
+    add_solid_borders(tbl_pr)
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tbl_pr.append(layout)
+    table_width = tbl_pr.find(qn("w:tblW"))
+    if table_width is not None:
+        table_width.set(qn("w:type"), "pct")
+        table_width.set(qn("w:w"), "5000")
+
+    grid = table.find(qn("w:tblGrid"))
+    if grid is None:
+        grid = OxmlElement("w:tblGrid")
+        table.insert(1, grid)
+    for column in list(grid):
+        grid.remove(column)
+    for width in column_widths:
+        grid_column = OxmlElement("w:gridCol")
+        grid_column.set(qn("w:w"), str(width))
+        grid.append(grid_column)
+
+    header_row = OxmlElement("w:tr")
+    for header in headers:
+        header_row.append(make_cell_oxml(header, bold=True, bg=HEADER_BG))
+    table.append(header_row)
+    for values in rows:
+        row = OxmlElement("w:tr")
+        for value in values:
+            row.append(make_cell_oxml(value))
+        table.append(row)
+    if total is not None:
+        total_row = OxmlElement("w:tr")
+        total_row.append(make_cell_oxml("合计", grid_span=2, bold=True))
+        total_row.append(make_cell_oxml(""))
+        total_row.append(make_cell_oxml(""))
+        total_row.append(make_cell_oxml(str(total), bold=True))
+        table.append(total_row)
+
+
 def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path, relation_path=None):
     """填充 01-数据统计分析_需求文档"""
     print(f"数据: {len(data_rows)} 条")
@@ -3064,25 +3154,24 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
         try: S[sn] = doc.styles[sn].style_id
         except: S[sn] = sn
 
-    # Find "需求来源" description paragraph to update count
-    src_para = desc_para = None
-    for i, p in enumerate(doc.paragraphs):
-        if p.style.name == "Heading 2" and "需求来源" in p.text:
-            src_para = i; desc_para = i + 1 if i + 1 < len(doc.paragraphs) else None; break
-    if src_para is None:
-        raise ValueError("未找到需求来源")
-
-    # Find "需求内容" H1
-    content_h1 = None
-    for i, p in enumerate(doc.paragraphs):
-        if p.style.name == "Heading 1" and "需求内容" in p.text:
-            content_h1 = i; break
+    source_heading = find_required_body_heading(doc, "Heading 2", "需求来源")
+    output_mapping_heading = find_required_body_heading(
+        doc, "Heading 3", "需求单、工单产出对应列表"
+    )
+    task_mapping_heading = find_required_body_heading(
+        doc, "Heading 3", "工单与任务的对应关系"
+    )
+    description_paragraph = find_body_paragraph_after(
+        doc, source_heading, output_mapping_heading
+    )
+    output_mapping_table = find_table_under_heading(doc, output_mapping_heading)
+    task_mapping_table = find_table_under_heading(doc, task_mapping_heading)
+    content_heading = find_required_body_heading(doc, "Heading 1", "需求内容")
+    other_heading = find_required_body_heading(doc, "Heading 1", "其他要求")
 
     # Build body children index
     children = list(body)
-    src_body = next(j for j, c in enumerate(children) if c is doc.paragraphs[src_para]._element)
-    tbl_body = next(j for j in range(src_body + 1, len(children)) if children[j].tag == qn('w:tbl'))
-    content_body = next(j for j, c in enumerate(children) if c is doc.paragraphs[content_h1]._element)
+    content_body = children.index(content_heading._element)
 
     # Find first H2 after 需求内容 (the first old gongdan)
     gd_body = None
@@ -3094,68 +3183,56 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
         if gd_body is not None: break
 
     # Find "其他要求" H1
-    other_h1_body = None
-    for j in range(content_body + 1, len(children)):
-        if children[j].tag == qn('w:p'):
-            for p in doc.paragraphs:
-                if p._element is children[j] and p.style.name == "Heading 1" and "其他要求" in p.text:
-                    other_h1_body = j; break
-        if other_h1_body is not None: break
+    other_h1_body = children.index(other_heading._element)
 
     # Update count description
     ureq = len(set(r["需求单号"] for r in data_rows))
     ugd = len(set(r["工单号"] for r in data_rows))
     trep = sum(int(r.get("报表统计次数", 0) or 0) for r in data_rows)
-    nd = f"服务周期内，共有{ureq}张需求单，{ugd}张工单涉及{trep}次数据统计分析。具体需求单、工单和产出如下表："
+    nd = f"服务周期内，共有{ureq}张需求单，{ugd}张工单涉及{trep}次数据统计分析"
     
-    dp = doc.paragraphs[desc_para]
+    dp = description_paragraph
     if dp.runs:
         dp.runs[0].text = nd
     for rn in dp.runs[1:]:
         rn.text = ""
 
-    # Rebuild table
-    tbl = children[tbl_body]
-    for tr in tbl.findall(qn('w:tr'))[1:]:
-        tbl.remove(tr)
-    tblPr = tbl.find(qn('w:tblPr'))
-    if tblPr is None:
-        tblPr = OxmlElement("w:tblPr"); tbl.insert(0, tblPr)
-    for eb in tblPr.findall(qn('w:tblBorders')):
-        tblPr.remove(eb)
-    for ts in tblPr.findall(qn('w:tblStyle')):
-        tblPr.remove(ts)
-    add_solid_borders(tblPr)
+    output_rows = [
+        [
+            str(idx + 1),
+            rd.get("需求单号", ""),
+            rd.get("工单号", ""),
+            rd.get("工单内容", ""),
+            rd.get("报表统计次数", ""),
+        ]
+        for idx, rd in enumerate(data_rows)
+    ]
+    rebuild_stats_mapping_table(
+        output_mapping_table,
+        ["序号", "对应需求单编号", "对应工单编号", "工单标题", "数据统计分析次数"],
+        output_rows,
+        [900, 1800, 1800, 3600, 900],
+        total=trep,
+    )
 
-    # Fixed layout + column widths 1:2:2:4:1
-    tw_el = tblPr.find(qn('w:tblW'))
-    if tw_el is not None:
-        tw_el.set(qn('w:type'), 'pct'); tw_el.set(qn('w:w'), '5000')
-    for tl in tblPr.findall(qn('w:tblLayout')):
-        tblPr.remove(tl)
-    tl = OxmlElement('w:tblLayout'); tl.set(qn('w:type'), 'fixed'); tblPr.append(tl)
-    tg = tbl.find(qn('w:tblGrid'))
-    if tg is not None:
-        for gc in list(tg):
-            tg.remove(gc)
-        for w in ["900", "1800", "1800", "3600", "900"]:
-            gc = OxmlElement("w:gridCol"); gc.set(qn("w:w"), w); tg.append(gc)
-
-    for idx, rd in enumerate(data_rows):
-        tr = OxmlElement("w:tr")
-        tr.append(make_cell_oxml(str(idx + 1)))
-        tr.append(make_cell_oxml(rd.get("需求单号", "")))
-        tr.append(make_cell_oxml(rd.get("工单号", "")))
-        tr.append(make_cell_oxml(rd.get("工单内容", "")))
-        tr.append(make_cell_oxml(rd.get("报表统计次数", "")))
-        tbl.append(tr)
-
-    trt = OxmlElement("w:tr")
-    trt.append(make_cell_oxml("合计", grid_span=2, bold=True))
-    trt.append(make_cell_oxml(""))
-    trt.append(make_cell_oxml(""))
-    trt.append(make_cell_oxml(str(trep), bold=True))
-    tbl.append(trt)
+    task_rows = []
+    for rd in data_rows:
+        results = rd.get("results") or parse_report_list(rd.get("统计分析结果表清单", ""))
+        for result_cn, _ in results:
+            task_rows.append(
+                [
+                    str(len(task_rows) + 1),
+                    rd.get("需求单号", ""),
+                    rd.get("工单号", ""),
+                    result_cn,
+                ]
+            )
+    rebuild_stats_mapping_table(
+        task_mapping_table,
+        ["序号", "对应需求单编号", "对应工单编号", "任务中文名"],
+        task_rows,
+        [900, 2100, 2100, 3900],
+    )
     print(f"表格: {len(data_rows)} 行 + 合计")
 
     # Remove old gongdan content between first gongdan H2 and 其他要求
@@ -3210,10 +3287,10 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
             biz = bts.get(gk, "")
             steps = summarize_biz_logic(biz) if biz else [("1", "无附件，请手动补充业务逻辑说明。")]
         new_elems.append(make_biz_table("业务逻辑说明", steps))
-        new_elems.append(mp("数据加工周期", S["Heading 3"]))
+        new_elems.append(mp("数据加工要求", S["Heading 3"]))
         new_elems.append(mp(f"数据统计分析执行周期：{xml_safe(rd.get('数据统计分析执行周期', ''))}。", S["Body Text"]))
         new_elems.append(mp(f"数据更新要求：{xml_safe(rd.get('数据更新要求', ''))}。", S["Body Text"]))
-        new_elems.append(mp(f"数据量对后续运维的特殊要求：{xml_safe(rd.get('数据量对后续运维的特殊要求', ''))}。", S["Body Text"]))
+        new_elems.append(mp(f"对运维的工作要求：{xml_safe(rd.get('数据量对后续运维的特殊要求', ''))}。", S["Body Text"]))
 
     # Insert new elements at the right position
     if insert_before is not None:
