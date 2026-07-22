@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from materials.shared.word_sections import update_toc_via_com
+from materials.shared.word_sections import center_table_header_rows, update_toc_via_com
 
 
 def escape_powershell_string(value):
@@ -93,6 +93,7 @@ def save_word_document(
 ):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    center_table_header_rows(document)
     if output.suffix.lower() == ".doc":
         Path(work_dir).mkdir(parents=True, exist_ok=True)
         docx_output = Path(work_dir) / f"{output.stem}.docx"

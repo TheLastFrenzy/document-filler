@@ -1041,7 +1041,10 @@ def style_range(ws, min_row: int, max_row: int, min_col: int, max_col: int, temp
             if template_row:
                 copy_cell_style(ws.cell(template_row, col), cell)
             cell.border = border
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
+            alignment = copy(cell.alignment)
+            alignment.vertical = "center"
+            alignment.wrap_text = True
+            cell.alignment = alignment
 
 
 def clear_sheet(ws) -> None:

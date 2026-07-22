@@ -248,6 +248,55 @@ def _replace_cell_text(cell, text):
     cell.append(clone_paragraph_with_text(prototype_paragraph, text))
 
 
+def _set_paragraph_alignment(paragraph, value):
+    properties = paragraph.find(qn("w:pPr"))
+    if properties is None:
+        properties = OxmlElement("w:pPr")
+        paragraph.insert(0, properties)
+    for alignment in list(properties.findall(qn("w:jc"))):
+        properties.remove(alignment)
+    alignment = OxmlElement("w:jc")
+    alignment.set(qn("w:val"), value)
+    properties.append(alignment)
+
+
+def _center_cell_paragraphs(cell):
+    paragraphs = list(cell.findall(qn("w:p")))
+    if not paragraphs:
+        paragraph = OxmlElement("w:p")
+        cell.append(paragraph)
+        paragraphs = [paragraph]
+    for paragraph in paragraphs:
+        _set_paragraph_alignment(paragraph, "center")
+
+
+def _center_row_cells(row):
+    for cell in row.findall(qn("w:tc")):
+        _center_cell_paragraphs(cell)
+
+
+def _is_repeating_table_header(row):
+    properties = row.find(qn("w:trPr"))
+    return properties is not None and properties.find(qn("w:tblHeader")) is not None
+
+
+def center_table_header_rows(document_or_element):
+    root = getattr(document_or_element, "_element", None)
+    if root is None:
+        root = getattr(document_or_element, "element", None)
+    if root is None:
+        root = document_or_element
+    if not hasattr(root, "iter"):
+        return document_or_element
+
+    for table in root.iter(qn("w:tbl")):
+        rows = list(table.findall(qn("w:tr")))
+        for index, row in enumerate(rows):
+            if index == 0 or _is_repeating_table_header(row):
+                _center_row_cells(row)
+    return document_or_element
+
+
 def _set_cell_width(cell, width, total_width):
     properties = cell.find(qn("w:tcPr"))
     if properties is None:
@@ -342,6 +391,7 @@ def clone_table_with_data(prototype, headers, rows, column_widths=None, footer=N
         table.remove(row)
     header_row = _clone_table_row(header_prototype, headers, widths, adjust_widths)
     _set_repeat_table_header(header_row)
+    _center_row_cells(header_row)
     table.append(header_row)
     for source_row in rows:
         values = [str(value or "") for value in source_row[:column_count]]

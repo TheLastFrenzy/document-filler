@@ -13,6 +13,7 @@ from materials.n07.api_requirement import (
 from materials.shared.embedded_docx import extract_embedded_docx_by_work_order
 from materials.shared.ledger import read_api_work_orders
 from materials.shared.word_sections import (
+    center_table_header_rows,
     clone_paragraph_with_text,
     clone_table_with_data,
     element_text,
@@ -140,6 +141,7 @@ def build_api_data_model_document(excel_path, service_dir, template_path, output
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    center_table_header_rows(document)
     document.save(output)
     update_toc_via_com(output)
     return str(output)

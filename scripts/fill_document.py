@@ -50,6 +50,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from materials.registry import get_material_spec, load_material_builder, registered_material_types
 from materials.shared.ledger_sheet import select_ledger_sheet
+from materials.shared.word_sections import center_table_header_rows
 
 HEADER_BG = "F1F1F1"
 
@@ -76,6 +77,11 @@ LEGACY_MATERIAL_TYPES = (
 
 def supported_material_types():
     return registered_material_types() + LEGACY_MATERIAL_TYPES
+
+
+def _save_word_with_centered_headers(document, output_path):
+    center_table_header_rows(document)
+    document.save(output_path)
 
 
 def resolve_output_path(output_path, material_type):
@@ -1678,7 +1684,7 @@ def make_table_oxml(headers, rows_data, col_widths=None):
     tbl.append(tg)
     hdr = OxmlElement("w:tr")
     for idx, h in enumerate(headers):
-        hdr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG, width=col_widths[idx]))
+        hdr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG, align="center", width=col_widths[idx]))
     _mark_repeating_table_header(hdr)
     tbl.append(hdr)
     for rd in rows_data:
@@ -2118,8 +2124,8 @@ def make_biz_table(header_text, rows_data):
     _mark_repeating_table_header(tr0)
     tbl.append(tr0)
     tr1 = OxmlElement("w:tr")
-    tr1.append(make_cell_oxml("步骤", bold=True, bg=HEADER_BG))
-    tr1.append(make_cell_oxml("说明", bold=True, bg=HEADER_BG))
+    tr1.append(make_cell_oxml("步骤", bold=True, bg=HEADER_BG, align="center"))
+    tr1.append(make_cell_oxml("说明", bold=True, bg=HEADER_BG, align="center"))
     _mark_repeating_table_header(tr1)
     tbl.append(tr1)
     for sn, st in rows_data:
@@ -2141,7 +2147,7 @@ def make_stats_source_table(headers, rows_data):
     tbl.append(tg)
     tr = OxmlElement("w:tr")
     for h in headers:
-        tr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG))
+        tr.append(make_cell_oxml(h, bold=True, bg=HEADER_BG, align="center"))
     tbl.append(tr)
     for rd in rows_data:
         tr = OxmlElement("w:tr")
@@ -2254,7 +2260,7 @@ def fill_requirement_doc(data_rows, template_path, output_path, catalog_context=
     insert_after_oxml(h1_content, new_elems)
     print(f"第3节: {len(new_elems)} 个元素")
 
-    doc.save(output_path)
+    _save_word_with_centered_headers(doc, output_path)
     print(f"已保存: {output_path}")
     update_toc_via_com(output_path)
     return output_path
@@ -2494,7 +2500,7 @@ def mk_indicator_table(rows_data=None):
     tbl.append(tg)
     tr_h = OxmlElement("w:tr")
     for h_text in INDICATOR_HEADERS:
-        tr_h.append(make_cell_oxml(h_text, bold=True, bg=HEADER_BG))
+        tr_h.append(make_cell_oxml(h_text, bold=True, bg=HEADER_BG, align="center"))
     tbl.append(tr_h)
     for rd in rows_data:
         tr = OxmlElement("w:tr")
@@ -2523,7 +2529,7 @@ def mk_biz_table(items):
     tbl.append(tg)
     for title, content in items:
         tr = OxmlElement("w:tr")
-        tr.append(make_cell_oxml(title, bold=True, bg=HEADER_BG))
+        tr.append(make_cell_oxml(title, bold=True, bg=HEADER_BG, align="center"))
         tr.append(make_cell_oxml(content))
         tbl.append(tr)
     return tbl
@@ -2548,12 +2554,12 @@ def mk_ds_table(table_title, fields):
     tbl.append(tg)
     # Row 0: merged title (name + code)
     tr0 = OxmlElement("w:tr")
-    tr0.append(make_cell_oxml(table_title, grid_span=4, bold=True))
+    tr0.append(make_cell_oxml(table_title, grid_span=4, bold=True, align="center"))
     tbl.append(tr0)
     # Row 1: column headers
     tr1 = OxmlElement("w:tr")
     for h_text in ["字段中文名称", "字段英文名称", "数据类型", "备注"]:
-        tr1.append(make_cell_oxml(h_text, bold=True, bg=HEADER_BG))
+        tr1.append(make_cell_oxml(h_text, bold=True, bg=HEADER_BG, align="center"))
     tbl.append(tr1)
     for f in fields:
         tr = OxmlElement("w:tr")
@@ -2844,7 +2850,7 @@ def fill_design_doc_full(excel_path, data_rows, template_path, output_path, cata
                 np.add_run().add_picture(tf.name, width=Inches(5.5))
                 os.unlink(tf.name)
 
-    doc.save(output_path)
+    _save_word_with_centered_headers(doc, output_path)
     print(f"已保存: {output_path}")
     update_toc_via_com(output_path)
     return output_path
@@ -2994,7 +3000,7 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
         else:
             body.append(mp("截图待补充。", S["Body Text"], 480))
 
-    doc.save(output_path)
+    _save_word_with_centered_headers(doc, output_path)
 
     # Insert images
     print("插入图片...")
@@ -3032,7 +3038,7 @@ def fill_launch_record_doc(excel_path, data_rows, template_path, output_path):
                         os.unlink(tf.name)
                 gi += 1
 
-    doc2.save(output_path)
+    _save_word_with_centered_headers(doc2, output_path)
     update_toc_via_com(output_path)
     return output_path
 
@@ -3355,7 +3361,7 @@ def fill_stats_requirement_doc(excel_path, data_rows, template_path, output_path
         for elem in new_elems:
             body.append(elem)
 
-    doc.save(output_path)
+    _save_word_with_centered_headers(doc, output_path)
     print(f"已保存: {output_path}")
     update_toc_via_com(output_path)
     return output_path
@@ -3768,7 +3774,7 @@ def fill_stats_design_doc(excel_path, data_rows, template_path, output_path, cat
             [(str(idx), step) for idx, step in enumerate(steps, start=1)],
         ))
 
-    doc.save(output_path)
+    _save_word_with_centered_headers(doc, output_path)
     print(f"已保存: {output_path}")
     update_toc_via_com(output_path)
     return output_path

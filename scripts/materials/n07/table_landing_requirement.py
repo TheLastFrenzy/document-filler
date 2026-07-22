@@ -9,6 +9,7 @@ from materials.n07.table_landing import read_table_landing_work_orders
 from materials.shared.ledger import merged_value_getter
 from materials.shared.ledger_sheet import select_ledger_sheet
 from materials.shared.word_sections import (
+    center_table_header_rows,
     clone_paragraph_with_text,
     clone_table_with_data,
     element_text,
@@ -353,6 +354,7 @@ def build_table_landing_requirement_document(excel_path, service_dir, template_p
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    center_table_header_rows(document)
     document.save(output)
     update_toc_via_com(output)
     return str(output)

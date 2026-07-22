@@ -5,6 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -112,6 +116,53 @@ class SharedOfficeWordTest(unittest.TestCase):
         self.assertTrue(callable(api_launch_record._convert_docx_to_legacy_doc))
         self.assertTrue(callable(api_launch_record._save_document))
         self.assertTrue(callable(api_test_report._convert_legacy_doc_template))
+
+    def test_save_word_document_centers_table_header_rows_before_saving(self):
+        from materials.shared.office_word import save_word_document
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "out.docx"
+            document = Document()
+            table = document.add_table(rows=2, cols=2)
+            for row_index, row in enumerate(table.rows):
+                for col_index, cell in enumerate(row.cells):
+                    cell.text = f"{row_index}-{col_index}"
+                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+            save_word_document(
+                document,
+                output,
+                Path(temp_dir) / "work",
+                toc_updater=lambda _path: None,
+            )
+
+            result = Document(output)
+            self.assertEqual(
+                result.tables[0].rows[0].cells[0].paragraphs[0].alignment,
+                WD_ALIGN_PARAGRAPH.CENTER,
+            )
+            self.assertEqual(
+                result.tables[0].rows[1].cells[0].paragraphs[0].alignment,
+                WD_ALIGN_PARAGRAPH.LEFT,
+            )
+
+    def test_clone_table_with_data_centers_generated_header_row(self):
+        from materials.shared.word_sections import clone_table_with_data
+
+        document = Document()
+        prototype = document.add_table(rows=2, cols=2)
+        prototype.rows[0].cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+        table = clone_table_with_data(
+            prototype._tbl,
+            headers=["header 1", "header 2"],
+            rows=[["value 1", "value 2"]],
+        )
+
+        header_cell = table.findall(qn("w:tr"))[0].findall(qn("w:tc"))[0]
+        alignment = header_cell.find(".//" + qn("w:jc"))
+        self.assertIsNotNone(alignment)
+        self.assertEqual(alignment.get(qn("w:val")), "center")
 
 
 if __name__ == "__main__":

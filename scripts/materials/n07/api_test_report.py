@@ -29,6 +29,7 @@ from materials.shared.office_word import (
     escape_powershell_string,
 )
 from materials.shared.word_sections import (
+    center_table_header_rows,
     clone_paragraph_with_text,
     clone_table_with_data,
     element_text,
@@ -364,6 +365,7 @@ def build_api_test_report_document(excel_path, service_dir, template_path, outpu
 
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
+        center_table_header_rows(document)
         document.save(output)
 
     update_toc_via_com(output)

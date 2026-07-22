@@ -102,6 +102,19 @@ def make_records_with_flowcharts(temp: Path):
 
 
 class StatsResultDispatchTest(unittest.TestCase):
+    def test_add_header_row_keeps_generated_excel_headers_center_aligned(self):
+        module = load_builder_module()
+        wb = openpyxl.Workbook()
+        ws = wb.active
+
+        module.add_header_row(ws, ["header 1", "header 2"])
+        ws.cell(2, 1, "body")
+        module.style_range(ws, 2, 2, 1, 2)
+
+        self.assertEqual(ws["A1"].alignment.horizontal, "center")
+        self.assertEqual(ws["B1"].alignment.horizontal, "center")
+        self.assertIsNone(ws["A2"].alignment.horizontal)
+
     def test_business_logic_steps_avoid_unsuitable_xml_logic_terms(self):
         module = load_builder_module()
         record = {

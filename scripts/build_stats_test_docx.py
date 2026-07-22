@@ -20,6 +20,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
+from materials.shared.word_sections import center_table_header_rows
+
 
 FALLBACK_CONCLUSION = (
     "经测试，在业务经理、测试开发人员的积极配合下，按照测试规范和流程，全部测试完毕。"
@@ -341,6 +343,7 @@ def build_stats_test_docx(ledger_path: str, service_dir: str, template_path: str
 
         if output.exists():
             output.unlink()
+        center_table_header_rows(doc)
         doc.save(output)
         update_docx_fields_via_com(str(output))
     print(json.dumps(summary, ensure_ascii=False))
