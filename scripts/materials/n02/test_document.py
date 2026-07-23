@@ -23,11 +23,19 @@ from materials.shared.word_sections import (
 )
 
 
-TASK_NAME_BOX = (54, 29, 794, 76)
-STRATEGY_BOX = (930, 29, 1200, 76)
-SUCCESS_BOX = (1211, 29, 1300, 76)
-LAUNCH_BOX = (1490, 29, 1665, 76)
+TASK_NAME_BOX = (42, 52, 805, 75)
+STRATEGY_BOX = (1028, 52, 1110, 75)
+SUCCESS_BOX = (1132, 52, 1185, 75)
+LAUNCH_BOX = (1420, 52, 1550, 75)
+TASK_NAME_POS = (45, 55)
+STRATEGY_POS = (1034, 55)
+SUCCESS_POS = (1135, 55)
+LAUNCH_POS = (1425, 55)
 MIN_FONT_SIZE = 12
+WHITE = (255, 255, 255)
+BLUE = (25, 128, 255)
+TEXT = (51, 51, 51)
+RED = (255, 77, 79)
 
 
 @dataclass(frozen=True)
@@ -49,17 +57,25 @@ def _safe_name(value):
     return text or "task"
 
 
-def _load_font(size):
+def _load_font(size, chinese=False):
     windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
     fonts = windir / "Fonts"
     candidates = [
         "msyh.ttc",
         "msyhbd.ttc",
         "simhei.ttf",
-        "simhei.ttf",
         "simsun.ttc",
         "arial.ttf",
     ]
+    if not chinese:
+        candidates = [
+            "arial.ttf",
+            "calibri.ttf",
+            "segoeui.ttf",
+            "msyh.ttc",
+            "simhei.ttf",
+            "simsun.ttc",
+        ]
     for name in candidates:
         font_path = fonts / name
         if font_path.exists():
@@ -70,25 +86,38 @@ def _load_font(size):
     return ImageFont.load_default()
 
 
-def _fit_font(draw, text, max_width, start_size=24, min_size=MIN_FONT_SIZE):
-    for size in range(start_size, min_size - 1, -1):
-        font = _load_font(size)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        if bbox[2] - bbox[0] <= max_width:
-            return font
-    return _load_font(min_size)
+def _erase_text_pixels(image, box):
+    pixels = image.load()
+    x1, y1, x2, y2 = box
+    for y in range(y1, y2):
+        for x in range(x1, x2):
+            r, g, b = pixels[x, y]
+            blueish = b > 135 and b > r + 12 and r < 235
+            reddish = r > 155 and g < 155 and b < 155 and r > g + 25
+            darkish = r < 165 and g < 165 and b < 165
+            gray_text = max(r, g, b) < 210 and max(r, g, b) - min(r, g, b) < 35
+            if blueish or reddish or darkish or gray_text:
+                pixels[x, y] = WHITE
 
 
-def _centered_position(draw, box, text, font, left_padding=0):
-    left, top, right, bottom = box
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    x = left + left_padding
-    if left_padding == 0:
-        x = left + max(0, (right - left - text_width) // 2)
-    y = top + max(0, (bottom - top - text_height) // 2) - bbox[1]
-    return x, y
+def _contains_cjk(text):
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+
+
+def _draw_success_failure(draw, text, font):
+    value = str(text or "").strip()
+    if not value:
+        return
+    x, y = SUCCESS_POS
+    if "/" not in value:
+        draw.text((x, y), value, font=font, fill=TEXT)
+        return
+    success, fail = value.split("/", 1)
+    draw.text((x, y), success, font=font, fill=BLUE)
+    x += int(round(draw.textlength(success, font=font)))
+    draw.text((x, y), "/", font=font, fill=TEXT)
+    x += int(round(draw.textlength("/", font=font)))
+    draw.text((x, y), fail, font=font, fill=RED)
 
 
 def normalize_execution_strategy(value):
@@ -177,26 +206,19 @@ def read_n02_tasks(excel_path):
     return tasks
 
 
-def _render_text(draw, box, text, *, fill, start_size, min_size=MIN_FONT_SIZE, align="center", left_padding=0):
-    text = str(text or "")
-    if not text:
-        return
-    font = _fit_font(draw, text, box[2] - box[0] - 8, start_size=start_size, min_size=min_size)
-    x, y = _centered_position(draw, box, text, font, left_padding=left_padding if align == "left" else 0)
-    draw.text((x, y), text, fill=fill, font=font)
-
-
 def render_task_screenshot(task, template_image_path, output_path):
     image = Image.open(template_image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
-    background = image.getpixel((10, 10))
     for box in (TASK_NAME_BOX, STRATEGY_BOX, SUCCESS_BOX, LAUNCH_BOX):
-        draw.rectangle(box, fill=background)
+        _erase_text_pixels(image, box)
 
-    _render_text(draw, TASK_NAME_BOX, task.task_name, fill=(33, 102, 173), start_size=24, align="left", left_padding=8)
-    _render_text(draw, STRATEGY_BOX, task.strategy_text, fill=(66, 66, 66), start_size=18)
-    _render_text(draw, SUCCESS_BOX, task.success_failure, fill=(192, 0, 0), start_size=22)
-    _render_text(draw, LAUNCH_BOX, task.launch_time_text, fill=(66, 66, 66), start_size=20)
+    font_ascii = _load_font(MIN_FONT_SIZE, chinese=False)
+    font_cn = _load_font(MIN_FONT_SIZE, chinese=True)
+    task_font = font_cn if _contains_cjk(task.task_name) else font_ascii
+    draw.text(TASK_NAME_POS, task.task_name, font=task_font, fill=BLUE)
+    draw.text(STRATEGY_POS, task.strategy_text, font=font_cn, fill=TEXT)
+    _draw_success_failure(draw, task.success_failure, font_ascii)
+    draw.text(LAUNCH_POS, task.launch_time_text, font=font_ascii, fill=TEXT)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
