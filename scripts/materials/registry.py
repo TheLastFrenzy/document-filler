@@ -60,6 +60,11 @@ CANONICAL_SPECS = {
         module="materials.n07.table_landing_share_record",
         function="build_table_landing_share_record_document",
     ),
+    "03-N02材料_测试文档": MaterialSpec(
+        default_filename="03-测试文档.docx",
+        module="materials.n02.test_document",
+        function="build_n02_test_document",
+    ),
 }
 
 
@@ -73,6 +78,8 @@ MATERIAL_ALIASES = {
     "04- 测试报告（库表落地）": "04-库表落地方式_测试报告",
     "05-作业上线记录": "05-库表落地方式_作业上线记录",
     "06-共享记录": "06-库表落地方式_共享记录",
+    "03-测试文档": "03-N02材料_测试文档",
+    "03-测试文档.docx": "03-N02材料_测试文档",
 }
 
 
